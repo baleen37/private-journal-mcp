@@ -1,0 +1,10 @@
+{
+  "name": "private-journal-mcp",
+  "description": "Local, private journaling MCP server with multilingual semantic search and optional Git sync",
+  "version": "0.1.0",
+  "author": {
+    "name": "Jiho Lee"
+  },
+  "hooks": "./hooks/hooks.json",
+  "mcpServers": "./.mcp.json"
+}
