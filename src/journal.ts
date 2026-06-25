@@ -32,7 +32,7 @@ export function renderEntry(sections: JournalSections, when: Date): string {
 export function parseFrontmatter(md: string): { title: string; date: string; timestamp: number } {
   const m = md.match(/^---\n([\s\S]*?)\n---/);
   const body = m ? m[1] : '';
-  const title = (body.match(/title:\s*"?(.*?)"?\s*$/m) || [])[1] || '';
+  const title = (body.match(/title:\s*"(.*?)"\s*$/m) || [])[1] || '';
   const date = (body.match(/date:\s*(.*?)\s*$/m) || [])[1] || '';
   const ts = parseInt((body.match(/timestamp:\s*(\d+)/) || [])[1] || '0', 10);
   return { title, date, timestamp: ts };

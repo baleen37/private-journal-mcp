@@ -28,6 +28,13 @@ describe('parseFrontmatter', () => {
     const fm = parseFrontmatter(md);
     expect(fm.timestamp).toBe(when.getTime());
     expect(fm.date).toBe(when.toISOString());
+    // Verify title round-trips without trailing quote or extra quotes
+    const hh = String(when.getHours()).padStart(2, '0');
+    const mm = String(when.getMinutes()).padStart(2, '0');
+    const ss = String(when.getSeconds()).padStart(2, '0');
+    const expectedTitle = `${hh}:${mm}:${ss} - June 25, 2026`;
+    expect(fm.title).toBe(expectedTitle);
+    expect(fm.title).not.toContain('"');
   });
 });
 
