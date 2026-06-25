@@ -6,6 +6,27 @@ import { parseFrontmatter } from './journal';
 
 const run = promisify(execFile);
 
+function gitErrorText(error: unknown): string {
+  if (error && typeof error === 'object') {
+    const stderr = 'stderr' in error ? error.stderr : undefined;
+    if (typeof stderr === 'string' && stderr.trim()) return stderr.trim();
+    const stdout = 'stdout' in error ? error.stdout : undefined;
+    if (typeof stdout === 'string' && stdout.trim()) return stdout.trim();
+  }
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
+function isNothingToCommitError(error: unknown): boolean {
+  return /nothing (added to commit|to commit)/i.test(gitErrorText(error));
+}
+
+function isRebaseConflictError(error: unknown): boolean {
+  return /(conflict|could not apply|resolve all conflicts manually|fix conflicts)/i.test(
+    gitErrorText(error),
+  );
+}
+
 export function chooseConflictWinner(oursMd: string, theirsMd: string): 'ours' | 'theirs' {
   const ours = parseFrontmatter(oursMd).timestamp;
   const theirs = parseFrontmatter(theirsMd).timestamp;
@@ -76,8 +97,12 @@ export class GitSync {
     if (!(await this.hasGitDir())) return;
     try {
       await this.git(['pull', '--rebase', '--autostash', 'origin', await this.currentBranch()]);
-    } catch {
-      await this.resolveRebaseConflicts();
+    } catch (err) {
+      if (isRebaseConflictError(err)) {
+        await this.resolveRebaseConflicts();
+        return;
+      }
+      console.error('[private-journal] git pull failed (best-effort):', gitErrorText(err));
     }
   }
 
@@ -131,11 +156,14 @@ export class GitSync {
     try {
       await this.ensureRepo();
       await this.git(['add', '-A']);
-      // commit may fail if nothing to commit; tolerate
       try {
         await this.git(['commit', '-m', message]);
-      } catch {
-        return; // nothing to commit
+      } catch (err) {
+        if (isNothingToCommitError(err)) {
+          return;
+        }
+        console.error('[private-journal] git commit failed (best-effort):', gitErrorText(err));
+        return;
       }
       const branch = await this.currentBranch();
       for (let attempt = 0; attempt < 2; attempt++) {
