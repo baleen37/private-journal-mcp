@@ -1,6 +1,7 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import { Server as McpServer } from '@modelcontextprotocol/sdk/server/index.js';
 import { EmbeddingService } from '../src/embeddings';
 import { SearchService } from '../src/search';
 import { PrivateJournalServer } from '../src/server';
@@ -28,6 +29,29 @@ describe('PrivateJournalServer handlers', () => {
     const { content } = await srv.handleRead({ path: entryPath });
 
     expect(content).toContain('회고 내용');
+  });
+
+  it('handleRead rejects paths outside the journal data directory', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-'));
+    const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), 'outside-'));
+    const outsidePath = path.join(outsideDir, 'entry.md');
+    await fs.writeFile(outsidePath, '외부 파일', 'utf8');
+    const srv = new PrivateJournalServer({ dataPath: dir });
+
+    await expect(srv.handleRead({ path: outsidePath })).rejects.toThrow(
+      'Path must be a journal markdown file inside the data directory.',
+    );
+  });
+
+  it('handleRead rejects non-markdown files', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-'));
+    const filePath = path.join(dir, 'entry.txt');
+    await fs.writeFile(filePath, 'not markdown', 'utf8');
+    const srv = new PrivateJournalServer({ dataPath: dir });
+
+    await expect(srv.handleRead({ path: filePath })).rejects.toThrow(
+      'Path must be a journal markdown file inside the data directory.',
+    );
   });
 
   it('handleSearch forwards query and options to SearchService.search', async () => {
@@ -67,5 +91,27 @@ describe('PrivateJournalServer handlers', () => {
 
     expect(list).toHaveLength(1);
     expect(list[0].sections).toContain('observations');
+  });
+
+  it('run performs ensureRepo before backfill before connect', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-'));
+    const srv = new PrivateJournalServer({ dataPath: dir });
+    const order: string[] = [];
+
+    jest.spyOn((srv as any).git, 'ensureRepo').mockImplementation(async () => {
+      order.push('ensureRepo');
+    });
+    jest.spyOn((srv as any).search, 'backfill').mockImplementation(async () => {
+      order.push('backfill');
+      return 0;
+    });
+    jest.spyOn(McpServer.prototype, 'connect').mockImplementation(async () => {
+      order.push('connect');
+      return undefined as never;
+    });
+
+    await srv.run();
+
+    expect(order).toEqual(['ensureRepo', 'backfill', 'connect']);
   });
 });

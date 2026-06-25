@@ -1,4 +1,5 @@
 import * as fs from 'fs/promises';
+import * as path from 'path';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
@@ -59,7 +60,19 @@ export class PrivateJournalServer {
   }
 
   async handleRead(args: ReadArgs): Promise<{ content: string }> {
-    const content = await fs.readFile(args.path, 'utf8');
+    const resolvedDataPath = path.resolve(this.dataPath);
+    const resolvedPath = path.resolve(args.path);
+    const relativePath = path.relative(resolvedDataPath, resolvedPath);
+
+    if (
+      path.extname(resolvedPath) !== '.md' ||
+      relativePath.startsWith('..') ||
+      path.isAbsolute(relativePath)
+    ) {
+      throw new Error('Path must be a journal markdown file inside the data directory.');
+    }
+
+    const content = await fs.readFile(resolvedPath, 'utf8');
     return { content };
   }
 
