@@ -64,6 +64,34 @@ describe('GitSync commitAndPush against a bare remote', () => {
   });
 });
 
+describe('GitSync ensureRepo with populated remote', () => {
+  it('falls back to an actual remote branch when remote HEAD is stale', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'gs-head-'));
+    const remote = path.join(base, 'remote.git');
+    const seed = path.join(base, 'seed');
+    const work = path.join(base, 'work');
+
+    await run('git', ['init', '--bare', remote]);
+    await run('git', ['clone', remote, seed]);
+    await configureGitIdentity(seed);
+    await run('git', ['checkout', '-b', 'trunk'], { cwd: seed });
+    await fs.writeFile(path.join(seed, 'entry.md'), md(456), 'utf8');
+    await run('git', ['add', 'entry.md'], { cwd: seed });
+    await run('git', ['commit', '-m', 'seed remote'], { cwd: seed });
+    await run('git', ['push', '-u', 'origin', 'trunk'], { cwd: seed });
+    await run('git', ['symbolic-ref', 'HEAD', 'refs/heads/missing'], { cwd: remote });
+
+    const gs = new GitSync(work, remote);
+
+    await expect(gs.ensureRepo()).resolves.toBeUndefined();
+
+    const file = await fs.readFile(path.join(work, 'entry.md'), 'utf8');
+    expect(file).toContain('timestamp: 456');
+    const { stdout } = await run('git', ['branch', '--show-current'], { cwd: work });
+    expect(stdout.trim()).toBe('trunk');
+  });
+});
+
 describe('GitSync best-effort error handling', () => {
   afterEach(() => {
     jest.restoreAllMocks();
@@ -116,6 +144,48 @@ describe('GitSync best-effort error handling', () => {
     expect(errorSpy).toHaveBeenCalledWith(
       '[private-journal] git pull failed (best-effort):',
       error.stderr,
+    );
+  });
+
+  it('logs internal conflict-resolution failures and unresolved rebase state', async () => {
+    const gs = new GitSync('/tmp/private-journal-gs-conflict', '/tmp/remote.git');
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const resolveMdConflict = jest.spyOn(gs as any, 'resolveMdConflict').mockResolvedValue(undefined);
+    jest.spyOn(gs as any, 'hasRebaseInProgress').mockResolvedValue(true);
+    const conflictError = Object.assign(new Error('pull conflict'), {
+      stderr: 'CONFLICT (content): Merge conflict in entry.md',
+      stdout: '',
+    });
+    const git = jest.fn()
+      .mockRejectedValueOnce(conflictError)
+      .mockResolvedValueOnce({ stdout: 'entry.md\n', stderr: '' })
+      .mockRejectedValueOnce(Object.assign(new Error('continue failed'), {
+        stderr: 'error: could not apply deadbeef',
+        stdout: '',
+      }))
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+      .mockRejectedValueOnce(Object.assign(new Error('status failed'), {
+        stderr: 'fatal: ambiguous argument HEAD',
+        stdout: '',
+      }));
+
+    jest.spyOn(gs as any, 'hasGitDir').mockResolvedValue(true);
+    jest.spyOn(gs as any, 'currentBranch').mockResolvedValue('main');
+    (gs as any).git = git;
+
+    await expect(gs.pull()).resolves.toBeUndefined();
+
+    expect(resolveMdConflict).toHaveBeenCalledWith('entry.md');
+    expect(errorSpy).toHaveBeenCalledWith(
+      '[private-journal] git rebase continue failed (best-effort):',
+      'error: could not apply deadbeef',
+    );
+    expect(errorSpy).toHaveBeenCalledWith(
+      '[private-journal] git conflict state check failed (best-effort):',
+      'fatal: ambiguous argument HEAD',
+    );
+    expect(errorSpy).toHaveBeenCalledWith(
+      '[private-journal] git rebase still unresolved after conflict handling (best-effort)',
     );
   });
 });
