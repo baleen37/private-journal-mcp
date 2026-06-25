@@ -1,8 +1,8 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { z } from 'zod';
 import { EmbeddingService } from './embeddings';
 import { GitSync } from './git-sync';
 import { JournalManager } from './journal';
@@ -97,91 +97,56 @@ export class PrivateJournalServer {
       console.error('[private-journal] backfill failed (best-effort):', error);
     });
 
-    const server = new Server(
-      { name: 'private-journal-mcp', version: '0.1.0' },
-      { capabilities: { tools: {} } },
+    const server = new McpServer({ name: 'private-journal-mcp', version: '0.1.0' });
+
+    const toText = (result: unknown) => ({
+      content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+    });
+
+    server.registerTool(
+      'write_journal',
+      {
+        description: 'Write a journal entry using one or more optional sections.',
+        inputSchema: Object.fromEntries(
+          SECTION_KEYS.map((key) => [key, z.string().optional()]),
+        ),
+      },
+      async (args) => toText(await this.handleWrite(args as JournalSections)),
     );
 
-    server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: [
-        {
-          name: 'write_journal',
-          description: 'Write a journal entry using one or more optional sections.',
-          inputSchema: {
-            type: 'object',
-            properties: Object.fromEntries(SECTION_KEYS.map((key) => [key, { type: 'string' }])),
-          },
+    server.registerTool(
+      'search_journal',
+      {
+        description: 'Search journal entries semantically.',
+        inputSchema: {
+          query: z.string(),
+          limit: z.number().optional(),
+          sections: z.array(z.string()).optional(),
         },
-        {
-          name: 'search_journal',
-          description: 'Search journal entries semantically.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              query: { type: 'string' },
-              limit: { type: 'number' },
-              sections: { type: 'array', items: { type: 'string' } },
-            },
-            required: ['query'],
-          },
+      },
+      async (args) => toText(await this.handleSearch(args as SearchArgs)),
+    );
+
+    server.registerTool(
+      'read_journal',
+      {
+        description: 'Read a journal entry by file path.',
+        inputSchema: { path: z.string() },
+      },
+      async (args) => toText(await this.handleRead(args as ReadArgs)),
+    );
+
+    server.registerTool(
+      'list_journal',
+      {
+        description: 'List recent journal entries.',
+        inputSchema: {
+          limit: z.number().optional(),
+          days: z.number().optional(),
         },
-        {
-          name: 'read_journal',
-          description: 'Read a journal entry by file path.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              path: { type: 'string' },
-            },
-            required: ['path'],
-          },
-        },
-        {
-          name: 'list_journal',
-          description: 'List recent journal entries.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              limit: { type: 'number' },
-              days: { type: 'number' },
-            },
-          },
-        },
-      ],
-    }));
-
-    server.setRequestHandler(CallToolRequestSchema, async (request) => {
-      const name = request.params.name;
-      const args = (request.params.arguments ?? {}) as Record<string, unknown>;
-
-      let result: unknown;
-
-      switch (name) {
-        case 'write_journal':
-          result = await this.handleWrite(args as JournalSections);
-          break;
-        case 'search_journal':
-          result = await this.handleSearch(args as unknown as SearchArgs);
-          break;
-        case 'read_journal':
-          result = await this.handleRead(args as unknown as ReadArgs);
-          break;
-        case 'list_journal':
-          result = await this.handleList(args as unknown as ListArgs);
-          break;
-        default:
-          throw new Error(`Unknown tool: ${name}`);
-      }
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
-    });
+      },
+      async (args) => toText(await this.handleList(args as ListArgs)),
+    );
 
     const transport = new StdioServerTransport();
     await server.connect(transport);

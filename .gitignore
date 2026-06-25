@@ -1,4 +1,7 @@
 node_modules/
-dist/
 *.log
 .DS_Store
+
+# dist/ is ignored globally (~/.gitignore_global) but we ship the build with the plugin
+!dist/
+!dist/**

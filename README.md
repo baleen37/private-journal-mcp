@@ -55,7 +55,33 @@ The `sync` subcommand exits as a no-op when no Git remote is configured.
 node dist/index.js sync
 ```
 
-## Registering with Claude MCP
+## Install as a Plugin (recommended)
+
+This repo is a plugin for both Claude Code (`.claude-plugin/plugin.json`) and Codex
+(`.codex-plugin/plugin.json`). Installing it registers the MCP server **and** the
+SessionStart sync hook in one step — no manual `settings.json`/`config.toml` edits,
+no absolute paths. The bundled `hooks/hooks.json` and `.mcp.json` resolve the plugin's
+own install path via `${CLAUDE_PLUGIN_ROOT}` (Claude Code) / `${PLUGIN_ROOT}` (Codex).
+
+Build first so `dist/` exists, then install:
+
+```bash
+npm install && npm run build
+```
+
+Claude Code:
+
+```bash
+/plugin install /absolute/path/to/private-journal-mcp
+```
+
+Codex:
+
+```bash
+codex plugin install /absolute/path/to/private-journal-mcp
+```
+
+### Manual MCP registration (without the plugin)
 
 ```bash
 claude mcp add private-journal -- node /absolute/path/to/private-journal-mcp/dist/index.js
@@ -78,9 +104,13 @@ Behavior:
 - Right after a `write_journal` save, it attempts `commit + pull --rebase + push` on a best-effort basis.
 - `node dist/index.js sync` handles `pull` and pushing any pending commits before a session starts.
 
-## SessionStart hook example
+## SessionStart sync hook
 
-`~/.claude/settings.json`:
+When installed as a plugin, the SessionStart sync hook is registered automatically
+(see `hooks/hooks.json`) — nothing to configure. It exits as a no-op unless
+`PRIVATE_JOURNAL_GIT_REMOTE` is set.
+
+To wire it up manually instead, add to `~/.claude/settings.json`:
 
 ```json
 {

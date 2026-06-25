@@ -53,7 +53,7 @@ export class EmbeddingService {
     if (!this.loading) {
       this.loading = (async () => {
         try {
-          const { pipeline, env } = await import('@xenova/transformers');
+          const { pipeline, env } = await import('@huggingface/transformers');
           env.cacheDir = resolveModelCachePath();
           const timeout = new Promise((_, rej) =>
             setTimeout(() => rej(new Error('embedding model load timed out')), LOAD_TIMEOUT_MS),
