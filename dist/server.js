@@ -36,9 +36,9 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.PrivateJournalServer = void 0;
 const fs = __importStar(require("fs/promises"));
 const path = __importStar(require("path"));
-const index_js_1 = require("@modelcontextprotocol/sdk/server/index.js");
+const mcp_js_1 = require("@modelcontextprotocol/sdk/server/mcp.js");
 const stdio_js_1 = require("@modelcontextprotocol/sdk/server/stdio.js");
-const types_js_1 = require("@modelcontextprotocol/sdk/types.js");
+const zod_1 = require("zod");
 const embeddings_1 = require("./embeddings");
 const git_sync_1 = require("./git-sync");
 const journal_1 = require("./journal");
@@ -101,83 +101,33 @@ class PrivateJournalServer {
         await this.search.backfill().catch((error) => {
             console.error('[private-journal] backfill failed (best-effort):', error);
         });
-        const server = new index_js_1.Server({ name: 'private-journal-mcp', version: '0.1.0' }, { capabilities: { tools: {} } });
-        server.setRequestHandler(types_js_1.ListToolsRequestSchema, async () => ({
-            tools: [
-                {
-                    name: 'write_journal',
-                    description: 'Write a journal entry using one or more optional sections.',
-                    inputSchema: {
-                        type: 'object',
-                        properties: Object.fromEntries(types_1.SECTION_KEYS.map((key) => [key, { type: 'string' }])),
-                    },
-                },
-                {
-                    name: 'search_journal',
-                    description: 'Search journal entries semantically.',
-                    inputSchema: {
-                        type: 'object',
-                        properties: {
-                            query: { type: 'string' },
-                            limit: { type: 'number' },
-                            sections: { type: 'array', items: { type: 'string' } },
-                        },
-                        required: ['query'],
-                    },
-                },
-                {
-                    name: 'read_journal',
-                    description: 'Read a journal entry by file path.',
-                    inputSchema: {
-                        type: 'object',
-                        properties: {
-                            path: { type: 'string' },
-                        },
-                        required: ['path'],
-                    },
-                },
-                {
-                    name: 'list_journal',
-                    description: 'List recent journal entries.',
-                    inputSchema: {
-                        type: 'object',
-                        properties: {
-                            limit: { type: 'number' },
-                            days: { type: 'number' },
-                        },
-                    },
-                },
-            ],
-        }));
-        server.setRequestHandler(types_js_1.CallToolRequestSchema, async (request) => {
-            const name = request.params.name;
-            const args = (request.params.arguments ?? {});
-            let result;
-            switch (name) {
-                case 'write_journal':
-                    result = await this.handleWrite(args);
-                    break;
-                case 'search_journal':
-                    result = await this.handleSearch(args);
-                    break;
-                case 'read_journal':
-                    result = await this.handleRead(args);
-                    break;
-                case 'list_journal':
-                    result = await this.handleList(args);
-                    break;
-                default:
-                    throw new Error(`Unknown tool: ${name}`);
-            }
-            return {
-                content: [
-                    {
-                        type: 'text',
-                        text: JSON.stringify(result, null, 2),
-                    },
-                ],
-            };
+        const server = new mcp_js_1.McpServer({ name: 'private-journal-mcp', version: '0.1.0' });
+        const toText = (result) => ({
+            content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
         });
+        server.registerTool('write_journal', {
+            description: 'Write a journal entry using one or more optional sections.',
+            inputSchema: Object.fromEntries(types_1.SECTION_KEYS.map((key) => [key, zod_1.z.string().optional()])),
+        }, async (args) => toText(await this.handleWrite(args)));
+        server.registerTool('search_journal', {
+            description: 'Search journal entries semantically.',
+            inputSchema: {
+                query: zod_1.z.string(),
+                limit: zod_1.z.number().optional(),
+                sections: zod_1.z.array(zod_1.z.string()).optional(),
+            },
+        }, async (args) => toText(await this.handleSearch(args)));
+        server.registerTool('read_journal', {
+            description: 'Read a journal entry by file path.',
+            inputSchema: { path: zod_1.z.string() },
+        }, async (args) => toText(await this.handleRead(args)));
+        server.registerTool('list_journal', {
+            description: 'List recent journal entries.',
+            inputSchema: {
+                limit: zod_1.z.number().optional(),
+                days: zod_1.z.number().optional(),
+            },
+        }, async (args) => toText(await this.handleList(args)));
         const transport = new stdio_js_1.StdioServerTransport();
         await server.connect(transport);
     }

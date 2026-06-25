@@ -83,7 +83,7 @@ class EmbeddingService {
         if (!this.loading) {
             this.loading = (async () => {
                 try {
-                    const { pipeline, env } = await Promise.resolve().then(() => __importStar(require('@xenova/transformers')));
+                    const { pipeline, env } = await Promise.resolve().then(() => __importStar(require('@huggingface/transformers')));
                     env.cacheDir = (0, paths_1.resolveModelCachePath)();
                     const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('embedding model load timed out')), LOAD_TIMEOUT_MS));
                     this.extractor = await Promise.race([
