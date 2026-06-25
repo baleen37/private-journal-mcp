@@ -134,6 +134,52 @@ describe('GitSync ensureRepo with populated remote', () => {
     const { stdout: origin } = await run('git', ['remote', 'get-url', 'origin'], { cwd: work });
     expect(origin.trim()).toBe(remote);
   });
+
+  it('uses remote markdown when the same path has a newer remote timestamp', async () => {
+    const { base, remote } = await createSeedRemote('gs-collision-remote-');
+    const seed = path.join(base, 'seed');
+    const work = path.join(base, 'work');
+
+    await fs.mkdir(path.join(seed, '2026-06-25'), { recursive: true });
+    await fs.writeFile(path.join(seed, '2026-06-25', 'entry.md'), md(600, 'remote newer'), 'utf8');
+    await run('git', ['add', '2026-06-25/entry.md'], { cwd: seed });
+    await run('git', ['commit', '-m', 'add remote collision'], { cwd: seed });
+    await run('git', ['push'], { cwd: seed });
+
+    await fs.mkdir(path.join(work, '2026-06-25'), { recursive: true });
+    await fs.writeFile(path.join(work, '2026-06-25', 'entry.md'), md(500, 'local older'), 'utf8');
+
+    const gs = new GitSync(work, remote);
+    await expect(gs.ensureRepo()).resolves.toBeUndefined();
+
+    const finalMd = await fs.readFile(path.join(work, '2026-06-25', 'entry.md'), 'utf8');
+    expect(finalMd).toContain('timestamp: 600');
+    expect(finalMd).toContain('remote newer');
+    expect(finalMd).not.toContain('local older');
+  });
+
+  it('keeps local markdown when the same path has an equal timestamp', async () => {
+    const { base, remote } = await createSeedRemote('gs-collision-local-');
+    const seed = path.join(base, 'seed');
+    const work = path.join(base, 'work');
+
+    await fs.mkdir(path.join(seed, '2026-06-25'), { recursive: true });
+    await fs.writeFile(path.join(seed, '2026-06-25', 'entry.md'), md(700, 'remote tie'), 'utf8');
+    await run('git', ['add', '2026-06-25/entry.md'], { cwd: seed });
+    await run('git', ['commit', '-m', 'add remote tie collision'], { cwd: seed });
+    await run('git', ['push'], { cwd: seed });
+
+    await fs.mkdir(path.join(work, '2026-06-25'), { recursive: true });
+    await fs.writeFile(path.join(work, '2026-06-25', 'entry.md'), md(700, 'local tie'), 'utf8');
+
+    const gs = new GitSync(work, remote);
+    await expect(gs.ensureRepo()).resolves.toBeUndefined();
+
+    const finalMd = await fs.readFile(path.join(work, '2026-06-25', 'entry.md'), 'utf8');
+    expect(finalMd).toContain('timestamp: 700');
+    expect(finalMd).toContain('local tie');
+    expect(finalMd).not.toContain('remote tie');
+  });
 });
 
 describe('GitSync rebase conflict integration', () => {
@@ -248,6 +294,23 @@ describe('GitSync best-effort error handling', () => {
       '[private-journal] git pull failed (best-effort):',
       error.stderr,
     );
+  });
+
+  it('logs ls-remote failures and does not initialize an empty repo', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gs-ls-remote-'));
+    const missingRemote = path.join(dir, 'missing.git');
+    const gs = new GitSync(dir, missingRemote);
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const gitSpy = jest.spyOn(gs as any, 'git');
+
+    await expect(gs.ensureRepo()).resolves.toBeUndefined();
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      '[private-journal] git ls-remote failed (best-effort):',
+      expect.stringContaining('does not appear to be a git repository'),
+    );
+    expect(gitSpy).not.toHaveBeenCalledWith(['init']);
+    await expect(fs.access(path.join(dir, '.git'))).rejects.toBeDefined();
   });
 
   it('logs internal conflict-resolution failures and unresolved rebase state', async () => {

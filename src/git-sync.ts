@@ -62,23 +62,33 @@ export class GitSync {
     if (await this.hasGitDir()) return;
     try {
       await fs.mkdir(this.dataPath, { recursive: true });
-      // does remote have any refs?
-      let remoteHasContent = false;
       try {
         const { stdout } = await run('git', ['ls-remote', this.remote!]);
-        remoteHasContent = stdout.trim().length > 0;
-      } catch {
-        remoteHasContent = false;
-      }
-      if (remoteHasContent) {
-        await this.clonePopulatedRemote();
-      } else {
+        if (stdout.trim().length > 0) {
+          await this.clonePopulatedRemote();
+          return;
+        }
         await this.git(['init']);
         await this.git(['remote', 'add', 'origin', this.remote!]);
+      } catch (err) {
+        logGitFailure('[private-journal] git ls-remote failed (best-effort):', err);
+        return;
       }
     } catch (err) {
       logGitFailure('[private-journal] git ensureRepo failed (best-effort):', err);
     }
+  }
+
+  private async pathExists(targetPath: string): Promise<boolean> {
+    return fs.access(targetPath).then(() => true).catch(() => false);
+  }
+
+  private async shouldReplaceMarkdownFile(localPath: string, remotePath: string): Promise<boolean> {
+    const [localMd, remoteMd] = await Promise.all([
+      fs.readFile(localPath, 'utf8'),
+      fs.readFile(remotePath, 'utf8'),
+    ]);
+    return chooseConflictWinner(localMd, remoteMd) === 'theirs';
   }
 
   private async defaultRemoteBranch(): Promise<string> {
@@ -135,8 +145,12 @@ export class GitSync {
         continue;
       }
       if (entry.isFile()) {
-        const exists = await fs.access(targetPath).then(() => true).catch(() => false);
+        const exists = await this.pathExists(targetPath);
         if (!exists) {
+          await fs.copyFile(sourcePath, targetPath);
+          continue;
+        }
+        if (entry.name.endsWith('.md') && await this.shouldReplaceMarkdownFile(targetPath, sourcePath)) {
           await fs.copyFile(sourcePath, targetPath);
         }
       }
