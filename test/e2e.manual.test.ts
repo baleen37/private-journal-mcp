@@ -27,7 +27,7 @@ const path = require('path');
 const { PrivateJournalServer } = require(${JSON.stringify(path.join(process.cwd(), 'dist/server.js'))});
 
 (async () => {
-  const { env, pipeline } = await import('@xenova/transformers');
+  const { env, pipeline } = await import('@huggingface/transformers');
   env.cacheDir = process.env.XDG_CACHE_HOME
     ? path.join(process.env.XDG_CACHE_HOME, 'private-journal', 'models')
     : undefined;
