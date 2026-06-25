@@ -116,12 +116,30 @@ export class GitSync {
         return;
       }
       await this.gitAt(clonePath, ['checkout', '-B', branch, `origin/${branch}`]);
-      const entries = await fs.readdir(clonePath);
-      for (const entry of entries) {
-        await fs.rename(path.join(clonePath, entry), path.join(this.dataPath, entry));
-      }
+      await fs.rename(path.join(clonePath, '.git'), path.join(this.dataPath, '.git'));
+      await this.mergeDirectoryContents(clonePath, this.dataPath);
     } finally {
       await fs.rm(parentDir, { recursive: true, force: true });
+    }
+  }
+
+  private async mergeDirectoryContents(fromDir: string, toDir: string): Promise<void> {
+    const entries = await fs.readdir(fromDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name === '.git') continue;
+      const sourcePath = path.join(fromDir, entry.name);
+      const targetPath = path.join(toDir, entry.name);
+      if (entry.isDirectory()) {
+        await fs.mkdir(targetPath, { recursive: true });
+        await this.mergeDirectoryContents(sourcePath, targetPath);
+        continue;
+      }
+      if (entry.isFile()) {
+        const exists = await fs.access(targetPath).then(() => true).catch(() => false);
+        if (!exists) {
+          await fs.copyFile(sourcePath, targetPath);
+        }
+      }
     }
   }
 

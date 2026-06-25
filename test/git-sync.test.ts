@@ -106,6 +106,34 @@ describe('GitSync ensureRepo with populated remote', () => {
     expect(file).toContain('trunk');
     expect(await currentBranch(work)).toBe('trunk');
   });
+
+  it('merges remote files into an existing local directory without losing local files', async () => {
+    const { base, remote } = await createSeedRemote('gs-merge-');
+    const seed = path.join(base, 'seed');
+    const work = path.join(base, 'work');
+
+    await fs.mkdir(path.join(seed, '2026-06-25'), { recursive: true });
+    await fs.writeFile(path.join(seed, '2026-06-25', 'remote.md'), md(500, 'remote entry'), 'utf8');
+    await run('git', ['add', '2026-06-25/remote.md'], { cwd: seed });
+    await run('git', ['commit', '-m', 'add remote journal file'], { cwd: seed });
+    await run('git', ['push'], { cwd: seed });
+
+    await fs.mkdir(path.join(work, '2026-06-25'), { recursive: true });
+    await fs.writeFile(path.join(work, '2026-06-25', 'local.md'), md(400, 'local entry'), 'utf8');
+
+    const gs = new GitSync(work, remote);
+
+    await expect(gs.ensureRepo()).resolves.toBeUndefined();
+
+    const localMd = await fs.readFile(path.join(work, '2026-06-25', 'local.md'), 'utf8');
+    const remoteMd = await fs.readFile(path.join(work, '2026-06-25', 'remote.md'), 'utf8');
+    expect(localMd).toContain('local entry');
+    expect(remoteMd).toContain('remote entry');
+    const { stdout: status } = await run('git', ['status', '--short'], { cwd: work });
+    expect(typeof status).toBe('string');
+    const { stdout: origin } = await run('git', ['remote', 'get-url', 'origin'], { cwd: work });
+    expect(origin.trim()).toBe(remote);
+  });
 });
 
 describe('GitSync rebase conflict integration', () => {
