@@ -60,19 +60,21 @@ export class PrivateJournalServer {
   }
 
   async handleRead(args: ReadArgs): Promise<{ content: string }> {
-    const resolvedDataPath = path.resolve(this.dataPath);
     const resolvedPath = path.resolve(args.path);
-    const relativePath = path.relative(resolvedDataPath, resolvedPath);
+    const realDataPath = await fs.realpath(this.dataPath);
 
-    if (
-      path.extname(resolvedPath) !== '.md' ||
-      relativePath.startsWith('..') ||
-      path.isAbsolute(relativePath)
-    ) {
+    if (path.extname(resolvedPath) !== '.md') {
       throw new Error('Path must be a journal markdown file inside the data directory.');
     }
 
-    const content = await fs.readFile(resolvedPath, 'utf8');
+    const realTargetPath = await fs.realpath(resolvedPath);
+    const relativePath = path.relative(realDataPath, realTargetPath);
+
+    if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+      throw new Error('Path must be a journal markdown file inside the data directory.');
+    }
+
+    const content = await fs.readFile(realTargetPath, 'utf8');
     return { content };
   }
 

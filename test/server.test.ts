@@ -54,6 +54,20 @@ describe('PrivateJournalServer handlers', () => {
     );
   });
 
+  it('handleRead rejects markdown symlinks escaping the data directory', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-'));
+    const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), 'outside-'));
+    const outsidePath = path.join(outsideDir, 'entry.md');
+    const linkedPath = path.join(dir, 'linked.md');
+    await fs.writeFile(outsidePath, 'symlink target', 'utf8');
+    await fs.symlink(outsidePath, linkedPath);
+    const srv = new PrivateJournalServer({ dataPath: dir });
+
+    await expect(srv.handleRead({ path: linkedPath })).rejects.toThrow(
+      'Path must be a journal markdown file inside the data directory.',
+    );
+  });
+
   it('handleSearch forwards query and options to SearchService.search', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-'));
     const expected = [
