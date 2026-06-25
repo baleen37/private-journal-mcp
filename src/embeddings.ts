@@ -52,16 +52,21 @@ export class EmbeddingService {
     if (this.extractor) return this.extractor;
     if (!this.loading) {
       this.loading = (async () => {
-        const { pipeline, env } = await import('@xenova/transformers');
-        env.cacheDir = resolveModelCachePath();
-        const timeout = new Promise((_, rej) =>
-          setTimeout(() => rej(new Error('embedding model load timed out')), LOAD_TIMEOUT_MS),
-        );
-        this.extractor = await Promise.race([
-          pipeline('feature-extraction', MODEL),
-          timeout,
-        ]);
-        return this.extractor;
+        try {
+          const { pipeline, env } = await import('@xenova/transformers');
+          env.cacheDir = resolveModelCachePath();
+          const timeout = new Promise((_, rej) =>
+            setTimeout(() => rej(new Error('embedding model load timed out')), LOAD_TIMEOUT_MS),
+          );
+          this.extractor = await Promise.race([
+            pipeline('feature-extraction', MODEL),
+            timeout,
+          ]);
+          return this.extractor;
+        } catch (e) {
+          this.loading = null;
+          throw e;
+        }
       })();
     }
     return this.loading;

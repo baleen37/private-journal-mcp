@@ -42,4 +42,12 @@ describe('save/loadEmbedding', () => {
   it('returns null when embedding file missing', async () => {
     expect(await svc.loadEmbedding('/no/such/file.md')).toBeNull();
   });
+  it('returns null when embedding file contains invalid JSON', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'emb-'));
+    const mdPath = path.join(dir, 'corrupt.md');
+    const embPath = mdPath.replace(/\.md$/, '.embedding');
+    await fs.writeFile(embPath, 'not valid json {]', 'utf8');
+    const loaded = await svc.loadEmbedding(mdPath);
+    expect(loaded).toBeNull();
+  });
 });
