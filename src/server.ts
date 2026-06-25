@@ -44,7 +44,7 @@ export class PrivateJournalServer {
     }
 
     const entryPath = await this.journal.write(args);
-    await this.git.commitAndPush(`journal: ${new Date().toISOString()}`).catch((error: unknown) => {
+    void this.git.commitAndPush(`journal: ${new Date().toISOString()}`).catch((error: unknown) => {
       console.error('[private-journal] commitAndPush failed (best-effort):', error);
     });
 

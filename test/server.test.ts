@@ -2,6 +2,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { EmbeddingService } from '../src/embeddings';
+import { SearchService } from '../src/search';
 import { PrivateJournalServer } from '../src/server';
 
 describe('PrivateJournalServer handlers', () => {
@@ -27,6 +28,33 @@ describe('PrivateJournalServer handlers', () => {
     const { content } = await srv.handleRead({ path: entryPath });
 
     expect(content).toContain('회고 내용');
+  });
+
+  it('handleSearch forwards query and options to SearchService.search', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-'));
+    const expected = [
+      {
+        path: path.join(dir, '2026-06-25', 'entry.md'),
+        score: 0.9,
+        excerpt: '결과',
+        sections: ['observations'],
+        timestamp: 1750809600000,
+      },
+    ];
+    const searchSpy = jest.spyOn(SearchService.prototype, 'search').mockResolvedValue(expected);
+    const srv = new PrivateJournalServer({ dataPath: dir });
+
+    const result = await srv.handleSearch({
+      query: '회고',
+      limit: 5,
+      sections: ['observations'],
+    });
+
+    expect(searchSpy).toHaveBeenCalledWith('회고', {
+      limit: 5,
+      sections: ['observations'],
+    });
+    expect(result).toBe(expected);
   });
 
   it('handleList returns the written entry', async () => {
