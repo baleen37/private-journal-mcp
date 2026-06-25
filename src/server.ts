@@ -68,9 +68,15 @@ export class PrivateJournalServer {
     }
 
     const realTargetPath = await fs.realpath(resolvedPath);
+    const stat = await fs.stat(realTargetPath);
     const relativePath = path.relative(realDataPath, realTargetPath);
 
-    if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+    if (
+      path.extname(realTargetPath) !== '.md' ||
+      !stat.isFile() ||
+      relativePath.startsWith('..') ||
+      path.isAbsolute(relativePath)
+    ) {
       throw new Error('Path must be a journal markdown file inside the data directory.');
     }
 
