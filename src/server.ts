@@ -68,6 +68,10 @@ export class PrivateJournalServer {
   }
 
   async run(): Promise<void> {
+    await this.git.ensureRepo().catch((error: unknown) => {
+      console.error('[private-journal] ensureRepo failed (best-effort):', error);
+    });
+
     await this.search.backfill().catch((error: unknown) => {
       console.error('[private-journal] backfill failed (best-effort):', error);
     });
@@ -156,10 +160,6 @@ export class PrivateJournalServer {
           },
         ],
       };
-    });
-
-    await this.git.ensureRepo().catch((error: unknown) => {
-      console.error('[private-journal] ensureRepo failed (best-effort):', error);
     });
 
     const transport = new StdioServerTransport();
