@@ -16,6 +16,26 @@ async function configureGitIdentity(repoPath: string) {
   await run('git', ['config', 'user.email', 'test@example.com'], { cwd: repoPath });
 }
 
+async function currentBranch(repoPath: string): Promise<string> {
+  const { stdout } = await run('git', ['branch', '--show-current'], { cwd: repoPath });
+  return stdout.trim();
+}
+
+async function createSeedRemote(basePrefix: string) {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), basePrefix));
+  const remote = path.join(base, 'remote.git');
+  const seed = path.join(base, 'seed');
+  await run('git', ['init', '--bare', remote]);
+  await run('git', ['clone', remote, seed]);
+  await configureGitIdentity(seed);
+  await fs.writeFile(path.join(seed, 'entry.md'), md(100, 'seed'), 'utf8');
+  await run('git', ['add', 'entry.md'], { cwd: seed });
+  await run('git', ['commit', '-m', 'seed remote'], { cwd: seed });
+  const branch = await currentBranch(seed);
+  await run('git', ['push', '-u', 'origin', branch], { cwd: seed });
+  return { base, remote, branch };
+}
+
 describe('chooseConflictWinner', () => {
   it('picks theirs when their timestamp is newer', () => {
     expect(chooseConflictWinner(md(100), md(200))).toBe('theirs');
@@ -66,20 +86,16 @@ describe('GitSync commitAndPush against a bare remote', () => {
 
 describe('GitSync ensureRepo with populated remote', () => {
   it('falls back to an actual remote branch when remote HEAD is stale', async () => {
-    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'gs-head-'));
-    const remote = path.join(base, 'remote.git');
+    const { base, remote } = await createSeedRemote('gs-head-');
     const seed = path.join(base, 'seed');
     const work = path.join(base, 'work');
-
-    await run('git', ['init', '--bare', remote]);
-    await run('git', ['clone', remote, seed]);
-    await configureGitIdentity(seed);
     await run('git', ['checkout', '-b', 'trunk'], { cwd: seed });
-    await fs.writeFile(path.join(seed, 'entry.md'), md(456), 'utf8');
-    await run('git', ['add', 'entry.md'], { cwd: seed });
-    await run('git', ['commit', '-m', 'seed remote'], { cwd: seed });
+    await fs.writeFile(path.join(seed, 'entry.md'), md(456, 'trunk'), 'utf8');
+    await run('git', ['commit', '-am', 'move to trunk'], { cwd: seed });
     await run('git', ['push', '-u', 'origin', 'trunk'], { cwd: seed });
     await run('git', ['symbolic-ref', 'HEAD', 'refs/heads/missing'], { cwd: remote });
+    await run('git', ['--git-dir', remote, 'update-ref', '-d', 'refs/heads/master']).catch(() => {});
+    await run('git', ['--git-dir', remote, 'update-ref', '-d', 'refs/heads/main']).catch(() => {});
 
     const gs = new GitSync(work, remote);
 
@@ -87,8 +103,67 @@ describe('GitSync ensureRepo with populated remote', () => {
 
     const file = await fs.readFile(path.join(work, 'entry.md'), 'utf8');
     expect(file).toContain('timestamp: 456');
-    const { stdout } = await run('git', ['branch', '--show-current'], { cwd: work });
-    expect(stdout.trim()).toBe('trunk');
+    expect(file).toContain('trunk');
+    expect(await currentBranch(work)).toBe('trunk');
+  });
+});
+
+describe('GitSync rebase conflict integration', () => {
+  it('keeps the newer timestamp version and leaves no rebase state', async () => {
+    const { base, remote, branch } = await createSeedRemote('gs-conflict-newer-');
+    const local = path.join(base, 'local');
+    const peer = path.join(base, 'peer');
+    await run('git', ['clone', remote, local]);
+    await run('git', ['clone', remote, peer]);
+    await configureGitIdentity(local);
+    await configureGitIdentity(peer);
+
+    await fs.writeFile(path.join(peer, 'entry.md'), md(300, 'theirs newer'), 'utf8');
+    await run('git', ['commit', '-am', 'peer update'], { cwd: peer });
+    await run('git', ['push', 'origin', branch], { cwd: peer });
+
+    await fs.writeFile(path.join(local, 'entry.md'), md(200, 'ours older'), 'utf8');
+    await run('git', ['commit', '-am', 'local update'], { cwd: local });
+
+    const gs = new GitSync(local, remote);
+    await expect(gs.pull()).resolves.toBeUndefined();
+
+    const finalMd = await fs.readFile(path.join(local, 'entry.md'), 'utf8');
+    expect(finalMd).toContain('timestamp: 300');
+    expect(finalMd).toContain('theirs newer');
+    const { stdout: status } = await run('git', ['status', '--porcelain'], { cwd: local });
+    expect(status.trim()).toBe('');
+    await expect(fs.access(path.join(local, '.git', 'rebase-merge'))).rejects.toBeDefined();
+    await expect(fs.access(path.join(local, '.git', 'rebase-apply'))).rejects.toBeDefined();
+  });
+
+  it('keeps ours when timestamps tie and leaves no rebase state', async () => {
+    const { base, remote, branch } = await createSeedRemote('gs-conflict-tie-');
+    const local = path.join(base, 'local');
+    const peer = path.join(base, 'peer');
+    await run('git', ['clone', remote, local]);
+    await run('git', ['clone', remote, peer]);
+    await configureGitIdentity(local);
+    await configureGitIdentity(peer);
+
+    await fs.writeFile(path.join(peer, 'entry.md'), md(400, 'theirs tie'), 'utf8');
+    await run('git', ['commit', '-am', 'peer tie update'], { cwd: peer });
+    await run('git', ['push', 'origin', branch], { cwd: peer });
+
+    await fs.writeFile(path.join(local, 'entry.md'), md(400, 'ours tie'), 'utf8');
+    await run('git', ['commit', '-am', 'local tie update'], { cwd: local });
+
+    const gs = new GitSync(local, remote);
+    await expect(gs.pull()).resolves.toBeUndefined();
+
+    const finalMd = await fs.readFile(path.join(local, 'entry.md'), 'utf8');
+    expect(finalMd).toContain('timestamp: 400');
+    expect(finalMd).toContain('ours tie');
+    expect(finalMd).not.toContain('theirs tie');
+    const { stdout: status } = await run('git', ['status', '--porcelain'], { cwd: local });
+    expect(status.trim()).toBe('');
+    await expect(fs.access(path.join(local, '.git', 'rebase-merge'))).rejects.toBeDefined();
+    await expect(fs.access(path.join(local, '.git', 'rebase-apply'))).rejects.toBeDefined();
   });
 });
 

@@ -5,6 +5,7 @@ import * as path from 'path';
 import { parseFrontmatter } from './journal';
 
 const run = promisify(execFile);
+const gitEnv = { ...process.env, GIT_EDITOR: process.env.GIT_EDITOR ?? 'true' };
 
 function gitErrorText(error: unknown): string {
   if (error && typeof error === 'object') {
@@ -45,7 +46,11 @@ export class GitSync {
   }
 
   private async git(args: string[]): Promise<{ stdout: string; stderr: string }> {
-    return run('git', args, { cwd: this.dataPath });
+    return run('git', args, { cwd: this.dataPath, env: gitEnv });
+  }
+
+  private async gitAt(cwd: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
+    return run('git', args, { cwd, env: gitEnv });
   }
 
   private async hasGitDir(): Promise<boolean> {
@@ -66,15 +71,7 @@ export class GitSync {
         remoteHasContent = false;
       }
       if (remoteHasContent) {
-        await this.git(['init']);
-        await this.git(['remote', 'add', 'origin', this.remote!]);
-        await this.git(['fetch', 'origin']);
-        const branch = await this.checkoutableRemoteBranch();
-        if (!branch) {
-          console.error('[private-journal] git fetch found no remote branches (best-effort)');
-          return;
-        }
-        await this.git(['checkout', '-B', branch, `origin/${branch}`]);
+        await this.clonePopulatedRemote();
       } else {
         await this.git(['init']);
         await this.git(['remote', 'add', 'origin', this.remote!]);
@@ -93,19 +90,39 @@ export class GitSync {
     return 'main';
   }
 
-  private async remoteBranches(): Promise<string[]> {
-    const { stdout } = await this.git(['for-each-ref', '--format=%(refname:strip=3)', 'refs/remotes/origin']);
+  private async remoteBranches(repoPath = this.dataPath): Promise<string[]> {
+    const { stdout } = await this.gitAt(repoPath, ['for-each-ref', '--format=%(refname:strip=3)', 'refs/remotes/origin']);
     return stdout
       .split('\n')
       .map((line) => line.trim())
       .filter((line) => line && line !== 'HEAD');
   }
 
-  private async checkoutableRemoteBranch(): Promise<string | undefined> {
+  private async checkoutableRemoteBranch(repoPath = this.dataPath): Promise<string | undefined> {
     const preferred = await this.defaultRemoteBranch();
-    const branches = await this.remoteBranches();
+    const branches = await this.remoteBranches(repoPath);
     if (branches.includes(preferred)) return preferred;
     return branches[0];
+  }
+
+  private async clonePopulatedRemote(): Promise<void> {
+    const parentDir = await fs.mkdtemp(path.join(path.dirname(this.dataPath), '.private-journal-clone-'));
+    const clonePath = path.join(parentDir, 'repo');
+    try {
+      await run('git', ['clone', '--no-checkout', this.remote!, clonePath]);
+      const branch = await this.checkoutableRemoteBranch(clonePath);
+      if (!branch) {
+        console.error('[private-journal] git clone found no remote branches (best-effort)');
+        return;
+      }
+      await this.gitAt(clonePath, ['checkout', '-B', branch, `origin/${branch}`]);
+      const entries = await fs.readdir(clonePath);
+      for (const entry of entries) {
+        await fs.rename(path.join(clonePath, entry), path.join(this.dataPath, entry));
+      }
+    } finally {
+      await fs.rm(parentDir, { recursive: true, force: true });
+    }
   }
 
   private async currentBranch(): Promise<string> {
@@ -173,20 +190,25 @@ export class GitSync {
   }
 
   private async resolveMdConflict(rel: string): Promise<void> {
-    let oursMd = '';
-    let theirsMd = '';
+    const rebaseInProgress = await this.hasRebaseInProgress();
+    let stage2 = '';
+    let stage3 = '';
     try {
-      oursMd = (await this.git(['show', `:2:${rel}`])).stdout;
+      stage2 = (await this.git(['show', `:2:${rel}`])).stdout;
     } catch (err) {
       logGitFailure('[private-journal] git show ours failed (best-effort):', err);
     }
     try {
-      theirsMd = (await this.git(['show', `:3:${rel}`])).stdout;
+      stage3 = (await this.git(['show', `:3:${rel}`])).stdout;
     } catch (err) {
       logGitFailure('[private-journal] git show theirs failed (best-effort):', err);
     }
-    const winner = chooseConflictWinner(oursMd, theirsMd);
-    const side = winner === 'ours' ? '--ours' : '--theirs';
+    const localMd = rebaseInProgress ? stage3 : stage2;
+    const remoteMd = rebaseInProgress ? stage2 : stage3;
+    const winner = chooseConflictWinner(localMd, remoteMd);
+    const side = winner === 'ours'
+      ? (rebaseInProgress ? '--theirs' : '--ours')
+      : (rebaseInProgress ? '--ours' : '--theirs');
     try {
       await this.git(['checkout', side, '--', rel]);
     } catch (err) {
@@ -229,12 +251,12 @@ export class GitSync {
       await this.ensureRepo();
       await this.git(['add', '-A']);
       try {
-        await this.git(['commit', '-m', message]);
+      await this.git(['commit', '-m', message]);
       } catch (err) {
         if (isNothingToCommitError(err)) {
           return;
         }
-        console.error('[private-journal] git commit failed (best-effort):', gitErrorText(err));
+        logGitFailure('[private-journal] git commit failed (best-effort):', err);
         return;
       }
       const branch = await this.currentBranch();
@@ -245,12 +267,12 @@ export class GitSync {
           return;
         } catch (err) {
           if (attempt === 1) {
-            console.error('[private-journal] git push failed (best-effort):', err);
+            logGitFailure('[private-journal] git push failed (best-effort):', err);
           }
         }
       }
     } catch (err) {
-      console.error('[private-journal] git sync failed (best-effort):', err);
+      logGitFailure('[private-journal] git sync failed (best-effort):', err);
     }
   }
 }
