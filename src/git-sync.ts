@@ -91,6 +91,14 @@ export class GitSync {
     return chooseConflictWinner(localMd, remoteMd) === 'theirs';
   }
 
+  private async deleteEmbeddingForMarkdown(mdPath: string): Promise<void> {
+    try {
+      await fs.rm(mdPath.replace(/\.md$/, '.embedding'), { force: true });
+    } catch (err) {
+      logGitFailure('[private-journal] embedding cleanup failed (best-effort):', err);
+    }
+  }
+
   private async defaultRemoteBranch(): Promise<string> {
     try {
       const { stdout } = await run('git', ['ls-remote', '--symref', this.remote!, 'HEAD']);
@@ -98,6 +106,15 @@ export class GitSync {
       if (m) return m[1];
     } catch { /* ignore */ }
     return 'main';
+  }
+
+  private async isTrackedPath(rel: string): Promise<boolean> {
+    try {
+      await this.git(['ls-files', '--error-unmatch', '--', rel]);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private async remoteBranches(repoPath = this.dataPath): Promise<string[]> {
@@ -152,6 +169,7 @@ export class GitSync {
         }
         if (entry.name.endsWith('.md') && await this.shouldReplaceMarkdownFile(targetPath, sourcePath)) {
           await fs.copyFile(sourcePath, targetPath);
+          await this.deleteEmbeddingForMarkdown(targetPath);
         }
       }
     }
@@ -246,8 +264,14 @@ export class GitSync {
     } catch (err) {
       logGitFailure('[private-journal] git markdown conflict checkout failed (best-effort):', err);
     }
+    const mdPath = path.join(this.dataPath, rel);
+    const embeddingRel = rel.replace(/\.md$/, '.embedding');
+    await this.deleteEmbeddingForMarkdown(mdPath);
     try {
       await this.git(['add', '--', rel]);
+      if (await this.isTrackedPath(embeddingRel)) {
+        await this.git(['add', '-u', '--', embeddingRel]);
+      }
     } catch (err) {
       logGitFailure('[private-journal] git markdown conflict add failed (best-effort):', err);
     }

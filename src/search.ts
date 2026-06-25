@@ -9,6 +9,26 @@ export class SearchService {
 
   async listEntryFiles(): Promise<string[]> {
     const out: string[] = [];
+    const rootPath = await fs.realpath(this.dataPath).catch(() => this.dataPath);
+
+    const isSafeMarkdownFile = async (filePath: string): Promise<boolean> => {
+      let stat;
+      try {
+        stat = await fs.lstat(filePath);
+      } catch {
+        return false;
+      }
+      if (!stat.isFile()) return false;
+      let realPath: string;
+      try {
+        realPath = await fs.realpath(filePath);
+      } catch {
+        return false;
+      }
+      const relative = path.relative(rootPath, realPath);
+      return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
+    };
+
     const walk = async (dir: string) => {
       let entries;
       try {
@@ -21,7 +41,7 @@ export class SearchService {
         if (e.isDirectory()) {
           if (e.name === '.git') continue;
           await walk(p);
-        } else if (e.name.endsWith('.md')) {
+        } else if (e.name.endsWith('.md') && await isSafeMarkdownFile(p)) {
           out.push(p);
         }
       }

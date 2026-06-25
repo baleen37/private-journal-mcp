@@ -148,6 +148,11 @@ describe('GitSync ensureRepo with populated remote', () => {
 
     await fs.mkdir(path.join(work, '2026-06-25'), { recursive: true });
     await fs.writeFile(path.join(work, '2026-06-25', 'entry.md'), md(500, 'local older'), 'utf8');
+    await fs.writeFile(
+      path.join(work, '2026-06-25', 'entry.embedding'),
+      '{"text":"stale local embedding"}',
+      'utf8',
+    );
 
     const gs = new GitSync(work, remote);
     await expect(gs.ensureRepo()).resolves.toBeUndefined();
@@ -156,6 +161,7 @@ describe('GitSync ensureRepo with populated remote', () => {
     expect(finalMd).toContain('timestamp: 600');
     expect(finalMd).toContain('remote newer');
     expect(finalMd).not.toContain('local older');
+    await expect(fs.access(path.join(work, '2026-06-25', 'entry.embedding'))).rejects.toBeDefined();
   });
 
   it('keeps local markdown when the same path has an equal timestamp', async () => {
@@ -197,6 +203,7 @@ describe('GitSync rebase conflict integration', () => {
     await run('git', ['push', 'origin', branch], { cwd: peer });
 
     await fs.writeFile(path.join(local, 'entry.md'), md(200, 'ours older'), 'utf8');
+    await fs.writeFile(path.join(local, 'entry.embedding'), '{"text":"stale local embedding"}', 'utf8');
     await run('git', ['commit', '-am', 'local update'], { cwd: local });
 
     const gs = new GitSync(local, remote);
@@ -205,6 +212,7 @@ describe('GitSync rebase conflict integration', () => {
     const finalMd = await fs.readFile(path.join(local, 'entry.md'), 'utf8');
     expect(finalMd).toContain('timestamp: 300');
     expect(finalMd).toContain('theirs newer');
+    await expect(fs.access(path.join(local, 'entry.embedding'))).rejects.toBeDefined();
     const { stdout: status } = await run('git', ['status', '--porcelain'], { cwd: local });
     expect(status.trim()).toBe('');
     await expect(fs.access(path.join(local, '.git', 'rebase-merge'))).rejects.toBeDefined();

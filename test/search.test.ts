@@ -67,4 +67,39 @@ describe('SearchService.backfill', () => {
     const n = await svc.backfill();
     expect(n).toBe(1);
   });
+
+  it('skips markdown symlinks that resolve outside dataPath while keeping regular markdown files', async () => {
+    const { dir, emb } = await seed();
+    const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), 'srch-outside-'));
+    const outsideMd = path.join(outsideDir, 'outside.md');
+    await fs.writeFile(outsideMd, [
+      '---',
+      'title: "outside"',
+      'date: d',
+      'timestamp: 1',
+      '---',
+      '',
+      '## Reflections',
+      '',
+      'secret outside content',
+      '',
+    ].join('\n'), 'utf8');
+
+    const symlinkPath = path.join(dir, 'leak.md');
+    await fs.symlink(outsideMd, symlinkPath);
+
+    jest.spyOn(emb, 'generateEmbedding').mockResolvedValue([0.25, 0.75]);
+    const svc = new SearchService(dir, emb);
+
+    const files = await svc.listEntryFiles();
+    expect(files).not.toContain(symlinkPath);
+    expect(files.some((file) => file.endsWith('.md'))).toBe(true);
+
+    const created = await svc.backfill();
+    expect(created).toBe(0);
+    await expect(fs.access(path.join(dir, 'leak.embedding'))).rejects.toBeDefined();
+
+    const results = await svc.search('secret outside content', { limit: 20 });
+    expect(results.some((result) => result.path === symlinkPath)).toBe(false);
+  });
 });
