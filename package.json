@@ -3,7 +3,7 @@
   "version": "1.0.7",
   "description": "Local, private journaling MCP server with multilingual semantic search",
   "bin": {
-    "private-journal-mcp": "./dist/index.js"
+    "private-journal-mcp": "./bin/private-journal-mcp"
   },
   "main": "dist/index.js",
   "scripts": {

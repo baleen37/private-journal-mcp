@@ -1,8 +1,35 @@
 #!/usr/bin/env node
 // Launcher resolves dist/ against its own location (__dirname), so the plugin
 // works whatever the process cwd is — no ${CLAUDE_PLUGIN_ROOT} interpolation needed.
+const { existsSync } = require('fs');
 const { resolve } = require('path');
-const { main } = require(resolve(__dirname, '..', 'dist', 'index.js'));
+const { spawnSync } = require('child_process');
+
+const pluginRoot = resolve(__dirname, '..');
+const runtimeDeps = ['@modelcontextprotocol/sdk', '@huggingface/transformers', 'zod'];
+
+function hasRuntimeDeps() {
+  return runtimeDeps.every((dep) => existsSync(resolve(pluginRoot, 'node_modules', dep)));
+}
+
+function bootstrapRuntimeDeps() {
+  if (hasRuntimeDeps()) return;
+
+  const result = spawnSync('npm', ['ci', '--omit=dev', '--ignore-scripts'], {
+    cwd: pluginRoot,
+    stdio: ['ignore', 'ignore', 'pipe'],
+    encoding: 'utf8',
+  });
+
+  if (result.status !== 0 || !hasRuntimeDeps()) {
+    if (result.stderr) process.stderr.write(result.stderr);
+    throw new Error('Failed to install private-journal-mcp runtime dependencies.');
+  }
+}
+
+bootstrapRuntimeDeps();
+
+const { main } = require(resolve(pluginRoot, 'dist', 'index.js'));
 
 main(process.argv).catch((error) => {
   console.error('[private-journal] fatal:', error);
