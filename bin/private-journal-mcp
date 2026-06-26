@@ -1,0 +1,10 @@
+#!/usr/bin/env node
+// Launcher resolves dist/ against its own location (__dirname), so the plugin
+// works whatever the process cwd is — no ${CLAUDE_PLUGIN_ROOT} interpolation needed.
+const { resolve } = require('path');
+const { main } = require(resolve(__dirname, '..', 'dist', 'index.js'));
+
+main(process.argv).catch((error) => {
+  console.error('[private-journal] fatal:', error);
+  process.exit(1);
+});

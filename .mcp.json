@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "private-journal": {
-      "command": "node",
-      "args": ["dist/index.js"],
+      "command": "./bin/private-journal-mcp",
+      "args": [],
       "cwd": "."
     }
   }
