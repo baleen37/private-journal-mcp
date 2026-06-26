@@ -9,10 +9,19 @@ permissions:
   pull-requests: write
 jobs:
   release:
+    if: ${{ !(contains(github.actor, '[bot]') && startsWith(github.event.head_commit.message, 'chore(release):')) }}
     runs-on: ubuntu-latest
     steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.BALEEN_RELEASE_APP_ID }}
+          private-key: ${{ secrets.BALEEN_RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
       - uses: actions/checkout@v4
         with:
+          token: ${{ steps.app-token.outputs.token }}
           fetch-depth: 0
           persist-credentials: true
       - uses: actions/setup-node@v4
@@ -22,5 +31,5 @@ jobs:
       - run: npm ci
       - name: Run semantic-release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: npx semantic-release
