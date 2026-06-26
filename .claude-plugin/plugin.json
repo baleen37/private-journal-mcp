@@ -6,6 +6,5 @@
   "author": {
     "name": "Jiho Lee"
   },
-  "hooks": "./hooks/hooks.json",
   "mcpServers": "./.mcp.json"
 }
