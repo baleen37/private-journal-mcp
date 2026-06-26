@@ -6,5 +6,10 @@
   "author": {
     "name": "Jiho Lee"
   },
-  "mcpServers": "./.mcp.json"
+  "mcpServers": {
+    "private-journal": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/private-journal-mcp",
+      "args": []
+    }
+  }
 }

@@ -60,9 +60,11 @@ node dist/index.js sync
 
 This repo is a plugin for both Claude Code (`.claude-plugin/plugin.json`) and Codex
 (`.codex-plugin/plugin.json`). Installing it registers the MCP server **and** the
-SessionStart sync hook in one step — no manual `settings.json`/`config.toml` edits,
-no absolute paths. The bundled `hooks/hooks.json` and `.mcp.json` resolve the plugin's
-own install path via `${CLAUDE_PLUGIN_ROOT}` (Claude Code) / `${PLUGIN_ROOT}` (Codex).
+SessionStart sync hook in one step — no manual `settings.json`/`config.toml` edits.
+The MCP server is declared inline in each manifest's `mcpServers` field (not a root
+`.mcp.json`, which would auto-load as a project-scope server). It resolves the plugin's
+own install path via `${CLAUDE_PLUGIN_ROOT}` (Claude Code) / a `./bin` relative path
+with `cwd` (Codex). The bundled `hooks/hooks.json` resolves paths the same way.
 
 Build first so `dist/` exists, then install:
 
