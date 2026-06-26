@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "private-journal": {
-      "command": "./bin/private-journal-mcp",
-      "args": [],
-      "cwd": "."
-    }
-  }
-}

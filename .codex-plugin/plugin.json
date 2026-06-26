@@ -5,5 +5,11 @@
   "author": {
     "name": "Jiho Lee"
   },
-  "mcpServers": "./.mcp.json"
+  "mcpServers": {
+    "private-journal": {
+      "command": "./bin/private-journal-mcp",
+      "args": [],
+      "cwd": "."
+    }
+  }
 }
