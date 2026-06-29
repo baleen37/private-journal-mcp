@@ -15,9 +15,9 @@ jobs:
           private-key: ${{ secrets.BALEEN_RELEASE_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: baleen-marketplace
-      - name: Dispatch update_versions to baleen-marketplace
-        uses: baleen37/baleen-marketplace/.github/actions/repository-dispatch@main
+      - name: Notify marketplace
+        uses: baleen37/baleen-marketplace/.github/actions/notify@v1
         with:
+          source: private-journal-mcp
+          version: ${{ github.event.release.tag_name }}
           token: ${{ steps.app-token.outputs.token }}
-          event-type: update_versions
-          client-payload: '{"plugin": "private-journal-mcp", "version": "${{ github.event.release.tag_name }}"}'
