@@ -25,6 +25,63 @@ interface ListArgs {
   days?: number;
 }
 
+const SECTION_GUIDE = [
+  'project_notes: project-specific facts, implementation decisions, repo paths, commands, and task state.',
+  'technical_insights: reusable debugging notes, API behavior, errors, fixes, and engineering lessons.',
+  'user_context: durable user preferences, collaboration style, goals, constraints, and identity context.',
+  'observations: neutral facts noticed during work that may matter later.',
+  'reflections: retrospective thoughts, uncertainty, tradeoffs, and lessons from an interaction.',
+  'world_knowledge: stable external facts that are not specific to one project or user.',
+].join('\n');
+
+function formatTimestamp(timestamp: number): string {
+  const date = new Date(timestamp);
+  const pad = (value: number) => value.toString().padStart(2, '0');
+  return [
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
+    `${pad(date.getHours())}:${pad(date.getMinutes())}`,
+  ].join(' ');
+}
+
+function formatSections(sections?: string[]): string {
+  return sections && sections.length > 0 ? sections.join(', ') : 'all';
+}
+
+function formatSearchResults(args: SearchArgs, results: SearchResult[]): string {
+  const lines = [
+    '### Journal Search Results',
+    '',
+    `Query: ${args.query}`,
+    `Sections: ${formatSections(args.sections)}`,
+    `Results: ${results.length}`,
+  ];
+
+  if (results.length === 0) {
+    lines.push(
+      '',
+      'No matching journal entries found.',
+      'Try a broader query, remove section filters, or search for related terms.',
+    );
+    return lines.join('\n');
+  }
+
+  for (const [index, result] of results.entries()) {
+    lines.push(
+      '',
+      `### ${index + 1}. ${formatTimestamp(result.timestamp)}`,
+      `Source: ${result.path}`,
+      `Sections: ${formatSections(result.sections)}`,
+      `Score: ${result.score.toFixed(3)}`,
+      '',
+      result.excerpt,
+      '',
+      '--------------------------------',
+    );
+  }
+
+  return lines.join('\n');
+}
+
 export class PrivateJournalServer {
   private readonly dataPath: string;
   private readonly journal: JournalManager;
@@ -102,11 +159,19 @@ export class PrivateJournalServer {
     const toText = (result: unknown) => ({
       content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
     });
+    const toPlainText = (text: string) => ({
+      content: [{ type: 'text' as const, text }],
+    });
 
     server.registerTool(
       'write_journal',
       {
-        description: 'Write a journal entry using one or more optional sections.',
+        description: [
+          'Write a durable private journal entry. Use this frequently to capture technical insights, failed approaches, user preferences, project decisions, and notable observations for future recall.',
+          'Choose one or more sections:',
+          SECTION_GUIDE,
+          'Return value remains a JSON object with the written file path.',
+        ].join('\n\n'),
         inputSchema: Object.fromEntries(
           SECTION_KEYS.map((key) => [key, z.string().optional()]),
         ),
@@ -117,20 +182,27 @@ export class PrivateJournalServer {
     server.registerTool(
       'search_journal',
       {
-        description: 'Search journal entries semantically.',
+        description: [
+          'Search private journal entries semantically and return LLM-readable markdown snippets with source paths, sections, scores, and excerpts.',
+          'Use sections to narrow recall when the intent is known; omit sections for broad discovery.',
+          `Allowed sections: ${SECTION_KEYS.join(', ')}.`,
+        ].join('\n\n'),
         inputSchema: {
           query: z.string(),
           limit: z.number().optional(),
-          sections: z.array(z.string()).optional(),
+          sections: z.array(z.enum(SECTION_KEYS)).optional(),
         },
       },
-      async (args) => toText(await this.handleSearch(args as SearchArgs)),
+      async (args) => {
+        const searchArgs = args as SearchArgs;
+        return toPlainText(formatSearchResults(searchArgs, await this.handleSearch(searchArgs)));
+      },
     );
 
     server.registerTool(
       'read_journal',
       {
-        description: 'Read a journal entry by file path.',
+        description: 'Read the full content of a single journal entry by file path returned from search_journal or list_journal.',
         inputSchema: { path: z.string() },
       },
       async (args) => toText(await this.handleRead(args as ReadArgs)),
@@ -139,7 +211,7 @@ export class PrivateJournalServer {
     server.registerTool(
       'list_journal',
       {
-        description: 'List recent journal entries.',
+        description: 'List recent journal entries with paths, dates, and sections for chronological review before reading full entries.',
         inputSchema: {
           limit: z.number().optional(),
           days: z.number().optional(),
