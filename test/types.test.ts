@@ -1,8 +1,8 @@
-import { SECTION_KEYS, SECTION_TITLES } from '../src/types';
+import { JOURNAL_SECTIONS, SECTION_TITLES } from '../src/types';
 
 describe('types', () => {
-  it('has 6 section keys in fixed order', () => {
-    expect(SECTION_KEYS).toEqual([
+  it('has 6 journal sections in fixed order', () => {
+    expect(JOURNAL_SECTIONS).toEqual([
       'reflections', 'observations', 'project_notes',
       'user_context', 'technical_insights', 'world_knowledge',
     ]);

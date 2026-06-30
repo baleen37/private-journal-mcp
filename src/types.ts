@@ -1,4 +1,4 @@
-export const SECTION_KEYS = [
+export const JOURNAL_SECTIONS = [
   'reflections',
   'observations',
   'project_notes',
@@ -7,9 +7,9 @@ export const SECTION_KEYS = [
   'world_knowledge',
 ] as const;
 
-export type SectionKey = (typeof SECTION_KEYS)[number];
+export type JournalSection = (typeof JOURNAL_SECTIONS)[number];
 
-export const SECTION_TITLES: Record<SectionKey, string> = {
+export const SECTION_TITLES: Record<JournalSection, string> = {
   reflections: 'Reflections',
   observations: 'Observations',
   project_notes: 'Project Notes',
@@ -18,7 +18,7 @@ export const SECTION_TITLES: Record<SectionKey, string> = {
   world_knowledge: 'World Knowledge',
 };
 
-export type JournalSections = Partial<Record<SectionKey, string>>;
+export type JournalSections = Partial<Record<JournalSection, string>>;
 
 export interface EmbeddingData {
   embedding: number[];

@@ -59,10 +59,10 @@ function renderEntry(sections, when) {
         '---',
         '',
     ];
-    for (const key of types_1.SECTION_KEYS) {
-        const val = sections[key];
+    for (const section of types_1.JOURNAL_SECTIONS) {
+        const val = sections[section];
         if (val && val.trim().length > 0) {
-            lines.push(`## ${types_1.SECTION_TITLES[key]}`, '', val.trim(), '');
+            lines.push(`## ${types_1.SECTION_TITLES[section]}`, '', val.trim(), '');
         }
     }
     return lines.join('\n');
@@ -77,9 +77,9 @@ function parseFrontmatter(md) {
 }
 function parseSections(md) {
     const present = [];
-    for (const key of types_1.SECTION_KEYS) {
-        if (md.includes(`## ${types_1.SECTION_TITLES[key]}`))
-            present.push(key);
+    for (const section of types_1.JOURNAL_SECTIONS) {
+        if (md.includes(`## ${types_1.SECTION_TITLES[section]}`))
+            present.push(section);
     }
     return present;
 }
@@ -101,8 +101,8 @@ class JournalManager {
         this.embeddings = embeddings;
     }
     hasContent(sections) {
-        return types_1.SECTION_KEYS.some((k) => {
-            const v = sections[k];
+        return types_1.JOURNAL_SECTIONS.some((section) => {
+            const v = sections[section];
             return !!v && v.trim().length > 0;
         });
     }

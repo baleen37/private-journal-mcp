@@ -45,14 +45,7 @@ const journal_1 = require("./journal");
 const paths_1 = require("./paths");
 const search_1 = require("./search");
 const types_1 = require("./types");
-const SECTION_GUIDE = [
-    'project_notes: project-specific facts, implementation decisions, repo paths, commands, and task state.',
-    'technical_insights: reusable debugging notes, API behavior, errors, fixes, and engineering lessons.',
-    'user_context: durable user preferences, collaboration style, goals, constraints, and identity context.',
-    'observations: neutral facts noticed during work that may matter later.',
-    'reflections: retrospective thoughts, uncertainty, tradeoffs, and lessons from an interaction.',
-    'world_knowledge: stable external facts that are not specific to one project or user.',
-].join('\n');
+const DEFAULT_SECTION = 'observations';
 function formatTimestamp(timestamp) {
     const date = new Date(timestamp);
     const pad = (value) => value.toString().padStart(2, '0');
@@ -61,15 +54,18 @@ function formatTimestamp(timestamp) {
         `${pad(date.getHours())}:${pad(date.getMinutes())}`,
     ].join(' ');
 }
+function formatSection(section) {
+    return section ?? 'all';
+}
 function formatSections(sections) {
-    return sections && sections.length > 0 ? sections.join(', ') : 'all';
+    return sections && sections.length > 0 ? sections.join(', ') : 'none';
 }
 function formatSearchResults(args, results) {
     const lines = [
         '### Journal Search Results',
         '',
         `Query: ${args.query}`,
-        `Sections: ${formatSections(args.sections)}`,
+        `Section: ${formatSection(args.section)}`,
         `Results: ${results.length}`,
     ];
     if (results.length === 0) {
@@ -94,10 +90,12 @@ class PrivateJournalServer {
         this.git = new git_sync_1.GitSync(this.dataPath, opts.remote ?? process.env.PRIVATE_JOURNAL_GIT_REMOTE);
     }
     async handleWrite(args) {
-        if (!this.journal.hasContent(args)) {
+        const section = args.section ?? DEFAULT_SECTION;
+        const sections = { [section]: args.content };
+        if (!this.journal.hasContent(sections)) {
             throw new Error('At least one journal section must have content.');
         }
-        const entryPath = await this.journal.write(args);
+        const entryPath = await this.journal.write(sections);
         void this.git.commitAndPush(`journal: ${new Date().toISOString()}`).catch((error) => {
             console.error('[private-journal] commitAndPush failed (best-effort):', error);
         });
@@ -106,7 +104,7 @@ class PrivateJournalServer {
     async handleSearch(args) {
         return this.search.search(args.query, {
             limit: args.limit,
-            sections: args.sections,
+            sections: args.section ? [args.section] : undefined,
         });
     }
     async handleRead(args) {
@@ -146,23 +144,24 @@ class PrivateJournalServer {
         });
         server.registerTool('write_journal', {
             description: [
-                'Write a durable private journal entry. Use this frequently to capture technical insights, failed approaches, user preferences, project decisions, and notable observations for future recall.',
-                'Choose one or more sections:',
-                SECTION_GUIDE,
-                'Return value remains a JSON object with the written file path.',
+                'Write a durable private journal entry. section defaults to observations.',
+                'Use project_notes for repo state, technical_insights for reusable fixes, and user_context for stable preferences.',
+                'Returns a JSON object with the written file path.',
             ].join('\n\n'),
-            inputSchema: Object.fromEntries(types_1.SECTION_KEYS.map((key) => [key, zod_1.z.string().optional()])),
+            inputSchema: {
+                content: zod_1.z.string(),
+                section: zod_1.z.enum(types_1.JOURNAL_SECTIONS).optional(),
+            },
         }, async (args) => toText(await this.handleWrite(args)));
         server.registerTool('search_journal', {
             description: [
                 'Search private journal entries semantically and return LLM-readable markdown snippets with source paths, sections, scores, and excerpts.',
-                'Use sections to narrow recall when the intent is known; omit sections for broad discovery.',
-                `Allowed sections: ${types_1.SECTION_KEYS.join(', ')}.`,
+                'Use section to narrow recall when the intent is known; omit section for broad discovery.',
             ].join('\n\n'),
             inputSchema: {
                 query: zod_1.z.string(),
                 limit: zod_1.z.number().optional(),
-                sections: zod_1.z.array(zod_1.z.enum(types_1.SECTION_KEYS)).optional(),
+                section: zod_1.z.enum(types_1.JOURNAL_SECTIONS).optional(),
             },
         }, async (args) => {
             const searchArgs = args;

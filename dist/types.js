@@ -1,7 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.SECTION_TITLES = exports.SECTION_KEYS = void 0;
-exports.SECTION_KEYS = [
+exports.SECTION_TITLES = exports.JOURNAL_SECTIONS = void 0;
+exports.JOURNAL_SECTIONS = [
     'reflections',
     'observations',
     'project_notes',
