@@ -5,7 +5,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { EmbeddingService } from '../src/embeddings';
 import { SearchService } from '../src/search';
 import { PrivateJournalServer } from '../src/server';
-import { SECTION_KEYS } from '../src/types';
+import { JOURNAL_SECTIONS } from '../src/types';
 
 type RegisteredTool = {
   name: string;
@@ -40,11 +40,11 @@ describe('PrivateJournalServer handlers', () => {
     jest.restoreAllMocks();
   });
 
-  it('handleWrite rejects empty input', async () => {
+  it('handleWrite rejects empty content', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-'));
     const srv = new PrivateJournalServer({ dataPath: dir });
 
-    await expect(srv.handleWrite({})).rejects.toThrow(
+    await expect(srv.handleWrite({ content: '   ' })).rejects.toThrow(
       'At least one journal section must have content.',
     );
   });
@@ -54,7 +54,10 @@ describe('PrivateJournalServer handlers', () => {
     jest.spyOn(EmbeddingService.getInstance(), 'generateEmbedding').mockResolvedValue([0.1, 0.2]);
     const srv = new PrivateJournalServer({ dataPath: dir });
 
-    const { path: entryPath } = await srv.handleWrite({ reflections: '회고 내용' });
+    const { path: entryPath } = await srv.handleWrite({
+      content: '회고 내용',
+      section: 'reflections',
+    });
     const { content } = await srv.handleRead({ path: entryPath });
 
     expect(content).toContain('회고 내용');
@@ -127,7 +130,7 @@ describe('PrivateJournalServer handlers', () => {
     const result = await srv.handleSearch({
       query: '회고',
       limit: 5,
-      sections: ['observations'],
+      section: 'observations',
     });
 
     expect(searchSpy).toHaveBeenCalledWith('회고', {
@@ -157,22 +160,30 @@ describe('PrivateJournalServer handlers', () => {
     expect(result).toEqual(expected);
   });
 
-  it('registers LLM-friendly tool descriptions and section enum schema', async () => {
+  it('registers compact section-based tool schemas', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-'));
     const srv = new PrivateJournalServer({ dataPath: dir });
 
     const tools = await collectRegisteredTools(srv);
     const byName = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
-    const searchSections = byName.search_journal.config.inputSchema?.sections;
+    const writeSchema = byName.write_journal.config.inputSchema;
+    const searchSchema = byName.search_journal.config.inputSchema;
+    const writeSection = writeSchema?.section;
+    const searchSection = searchSchema?.section;
 
-    expect(byName.write_journal.config.description).toContain('project_notes');
-    expect(byName.write_journal.config.description).toContain('technical_insights');
-    expect(byName.write_journal.config.description).toContain('world_knowledge');
+    expect(writeSchema?.content).toBeDefined();
+    expect(writeSchema?.section).toBeDefined();
+    expect(writeSchema?.reflections).toBeUndefined();
+    expect(writeSchema?.technical_insights).toBeUndefined();
+    expect(searchSchema?.section).toBeDefined();
+    expect(searchSchema?.sections).toBeUndefined();
+    expect(byName.write_journal.config.description).toContain('section defaults to observations');
     expect(byName.search_journal.config.description).toContain('snippet');
     expect(byName.read_journal.config.description).toContain('full');
     expect(byName.list_journal.config.description).toContain('recent');
-    expect(searchSections.unwrap().element.options).toEqual(SECTION_KEYS);
-    expect(searchSections.safeParse(['not_a_section']).success).toBe(false);
+    expect(writeSection.unwrap().options).toEqual(JOURNAL_SECTIONS);
+    expect(searchSection.unwrap().options).toEqual(JOURNAL_SECTIONS);
+    expect(searchSection.safeParse('not_a_section').success).toBe(false);
   });
 
   it('keeps write_journal MCP results as the existing JSON path shape', async () => {
@@ -182,7 +193,7 @@ describe('PrivateJournalServer handlers', () => {
 
     const tools = await collectRegisteredTools(srv);
     const writeTool = tools.find((tool) => tool.name === 'write_journal')!;
-    const result = await writeTool.callback({ reflections: 'note' });
+    const result = await writeTool.callback({ content: 'note', section: 'reflections' });
 
     expect(JSON.parse(result.content[0].text)).toEqual({ path: '/tmp/journal.md' });
   });
@@ -204,13 +215,13 @@ describe('PrivateJournalServer handlers', () => {
     const searchTool = tools.find((tool) => tool.name === 'search_journal')!;
     const result = await searchTool.callback({
       query: 'private-journal MCP tool schema',
-      sections: ['technical_insights', 'project_notes'],
+      section: 'technical_insights',
     });
     const text = result.content[0].text;
 
     expect(text).toContain('### Journal Search Results');
     expect(text).toContain('Query: private-journal MCP tool schema');
-    expect(text).toContain('Sections: technical_insights, project_notes');
+    expect(text).toContain('Section: technical_insights');
     expect(text).toContain('Results: 1');
     expect(text).toContain('Source:');
     expect(text).toContain('Sections: project_notes, technical_insights');
@@ -229,13 +240,13 @@ describe('PrivateJournalServer handlers', () => {
     const searchTool = tools.find((tool) => tool.name === 'search_journal')!;
     const result = await searchTool.callback({
       query: 'missing topic',
-      sections: ['technical_insights'],
+      section: 'technical_insights',
     });
     const text = result.content[0].text;
 
     expect(text).toContain('### Journal Search Results');
     expect(text).toContain('Query: missing topic');
-    expect(text).toContain('Sections: technical_insights');
+    expect(text).toContain('Section: technical_insights');
     expect(text).toContain('Results: 0');
     expect(text).toContain('Try a broader query');
   });
@@ -245,7 +256,7 @@ describe('PrivateJournalServer handlers', () => {
     jest.spyOn(EmbeddingService.getInstance(), 'generateEmbedding').mockResolvedValue([0.1, 0.2]);
     const srv = new PrivateJournalServer({ dataPath: dir });
 
-    await srv.handleWrite({ observations: '관찰' });
+    await srv.handleWrite({ content: '관찰', section: 'observations' });
     const list = await srv.handleList({ days: 3650 });
 
     expect(list).toHaveLength(1);

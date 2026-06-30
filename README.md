@@ -7,11 +7,13 @@ Optionally, entries can be auto-synced to a Git remote.
 ## Tools
 
 - `write_journal`
-  - Takes one or more of the six sections (`reflections`, `observations`, `project_notes`, `user_context`, `technical_insights`, `world_knowledge`) and stores an entry.
+  - Stores an entry from `content`.
+  - Optional arg: `section` (`reflections`, `observations`, `project_notes`, `user_context`, `technical_insights`, `world_knowledge`)
+  - `section` defaults to `observations`.
 - `search_journal`
   - Performs semantic search over stored entries.
   - Required arg: `query`
-  - Optional args: `limit`, `sections`
+  - Optional args: `limit`, `section`
 - `read_journal`
   - Reads a full individual Markdown entry by `path`.
 - `list_journal`

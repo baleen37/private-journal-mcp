@@ -1,6 +1,11 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { SECTION_KEYS, SECTION_TITLES, SectionKey, JournalSections, EmbeddingData } from './types';
+import {
+  JOURNAL_SECTIONS,
+  SECTION_TITLES,
+  JournalSections,
+  EmbeddingData,
+} from './types';
 import { EmbeddingService } from './embeddings';
 
 function pad(n: number, len = 2): string {
@@ -23,10 +28,10 @@ export function renderEntry(sections: JournalSections, when: Date): string {
     '---',
     '',
   ];
-  for (const key of SECTION_KEYS) {
-    const val = sections[key as SectionKey];
+  for (const section of JOURNAL_SECTIONS) {
+    const val = sections[section];
     if (val && val.trim().length > 0) {
-      lines.push(`## ${SECTION_TITLES[key as SectionKey]}`, '', val.trim(), '');
+      lines.push(`## ${SECTION_TITLES[section]}`, '', val.trim(), '');
     }
   }
   return lines.join('\n');
@@ -43,8 +48,8 @@ export function parseFrontmatter(md: string): { title: string; date: string; tim
 
 export function parseSections(md: string): string[] {
   const present: string[] = [];
-  for (const key of SECTION_KEYS) {
-    if (md.includes(`## ${SECTION_TITLES[key as SectionKey]}`)) present.push(key);
+  for (const section of JOURNAL_SECTIONS) {
+    if (md.includes(`## ${SECTION_TITLES[section]}`)) present.push(section);
   }
   return present;
 }
@@ -64,8 +69,8 @@ export class JournalManager {
   constructor(private dataPath: string, private embeddings: EmbeddingService) {}
 
   hasContent(sections: JournalSections): boolean {
-    return SECTION_KEYS.some((k) => {
-      const v = sections[k as SectionKey];
+    return JOURNAL_SECTIONS.some((section) => {
+      const v = sections[section];
       return !!v && v.trim().length > 0;
     });
   }
