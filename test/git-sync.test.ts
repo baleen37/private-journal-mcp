@@ -367,6 +367,42 @@ describe('GitSync best-effort error handling', () => {
   });
 });
 
+describe('GitSync repo metadata', () => {
+  it('creates .gitattributes marking .embedding as binary', async () => {
+    const { base, remote } = await createSeedRemote('gs-attrs-');
+    const dir = path.join(base, 'local');
+    const gs = new GitSync(dir, remote);
+    await gs.ensureRepo();
+
+    const attrs = await fs.readFile(path.join(dir, '.gitattributes'), 'utf8');
+    expect(attrs).toContain('*.embedding binary');
+  }, 30000);
+
+  it('excludes the lock file from the data repo', async () => {
+    const { base, remote } = await createSeedRemote('gs-exclude-');
+    const dir = path.join(base, 'local');
+    const gs = new GitSync(dir, remote);
+    await gs.ensureRepo();
+    await configureGitIdentity(dir);
+
+    await fs.writeFile(path.join(dir, '.private-journal-sync.lock'), '{}', 'utf8');
+    const { stdout } = await run('git', ['status', '--porcelain'], { cwd: dir });
+    expect(stdout).not.toContain('.private-journal-sync.lock');
+  }, 30000);
+
+  it('does not overwrite an existing .gitattributes', async () => {
+    const { base, remote } = await createSeedRemote('gs-attrs-keep-');
+    const dir = path.join(base, 'local');
+    const gs = new GitSync(dir, remote);
+    await gs.ensureRepo();
+    await fs.writeFile(path.join(dir, '.gitattributes'), '# custom\n', 'utf8');
+
+    await gs.ensureRepo(); // 두 번째 호출
+    const attrs = await fs.readFile(path.join(dir, '.gitattributes'), 'utf8');
+    expect(attrs).toBe('# custom\n');
+  }, 30000);
+});
+
 describe('resolveGitTimeoutMs', () => {
   it('defaults to 10000ms', () => {
     expect(resolveGitTimeoutMs({})).toBe(10000);

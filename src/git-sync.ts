@@ -125,23 +125,51 @@ export class GitSync {
 
   async ensureRepo(): Promise<void> {
     if (!this.enabled) return;
-    if (await this.hasGitDir()) return;
+    if (await this.hasGitDir()) {
+      await this.ensureRepoMetadata();
+      return;
+    }
     try {
       await fs.mkdir(this.dataPath, { recursive: true });
       try {
         const { stdout } = await this.runNet(['ls-remote', this.remote!]);
         if (stdout.trim().length > 0) {
           await this.clonePopulatedRemote();
+          await this.ensureRepoMetadata();
           return;
         }
         await this.git(['init']);
         await this.git(['remote', 'add', 'origin', this.remote!]);
+        await this.ensureRepoMetadata();
       } catch (err) {
         logGitFailure('[private-journal] git ls-remote failed (best-effort):', err);
         return;
       }
     } catch (err) {
       logGitFailure('[private-journal] git ensureRepo failed (best-effort):', err);
+    }
+  }
+
+  private async ensureRepoMetadata(): Promise<void> {
+    const attrsPath = path.join(this.dataPath, '.gitattributes');
+    if (!(await this.pathExists(attrsPath))) {
+      await fs.writeFile(attrsPath, '*.embedding binary\n', 'utf8');
+    }
+    // 록 파일은 데이터 repo에 커밋되면 안 된다.
+    // .gitignore가 아니라 .git/info/exclude를 쓴다 — 사용자의 .gitignore를 건드리지 않고
+    // 원격에 퍼지지도 않는다.
+    const excludePath = path.join(this.dataPath, '.git', 'info', 'exclude');
+    try {
+      await fs.mkdir(path.dirname(excludePath), { recursive: true });
+      let current = '';
+      try {
+        current = await fs.readFile(excludePath, 'utf8');
+      } catch { /* 파일이 없으면 새로 만든다 */ }
+      if (!current.includes(LOCK_FILENAME)) {
+        await fs.appendFile(excludePath, `\n${LOCK_FILENAME}\n`, 'utf8');
+      }
+    } catch (err) {
+      logGitFailure('[private-journal] git exclude setup failed (best-effort):', err);
     }
   }
 
