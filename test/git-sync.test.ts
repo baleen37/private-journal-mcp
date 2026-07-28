@@ -615,15 +615,28 @@ describe('GitSync file lock', () => {
 
   it('does not deadlock when commitAndPush internally pulls', async () => {
     const { base, remote, branch } = await createSeedRemote('gs-deadlock-');
-    const dir = path.join(base, 'local');
-    const gs = new GitSync(dir, remote);
-    await gs.ensureRepo();
-    await configureGitIdentity(dir);
+    const local = path.join(base, 'local');
+    const peer = path.join(base, 'peer');
+    await run('git', ['clone', remote, local]);
+    await run('git', ['clone', remote, peer]);
+    await configureGitIdentity(local);
+    await configureGitIdentity(peer);
 
-    await fs.writeFile(path.join(dir, 'pushed.md'), md(1200, 'pushed'), 'utf8');
+    // peer가 먼저 원격에 push해서 원격이 로컬보다 앞서게 만든다 (충돌은 피하도록 별도 파일)
+    await fs.writeFile(path.join(peer, 'peer.md'), md(1150, 'from peer'), 'utf8');
+    await run('git', ['add', 'peer.md'], { cwd: peer });
+    await run('git', ['commit', '-m', 'peer push'], { cwd: peer });
+    await run('git', ['push', 'origin', branch], { cwd: peer });
+
+    const gs = new GitSync(local, remote);
+    await fs.writeFile(path.join(local, 'pushed.md'), md(1200, 'pushed'), 'utf8');
     await gs.commitAndPush('should actually push');
 
-    const { stdout } = await run('git', ['log', '--oneline', `origin/${branch}`], { cwd: dir });
+    // push가 실제로 성공했다 (내부 pull이 데드락으로 skip됐다면 non-fast-forward로 거부된다)
+    const { stdout } = await run('git', ['log', '--oneline', `origin/${branch}`], { cwd: local });
     expect(stdout).toContain('should actually push');
+
+    // 내부 pull이 실제로 돌아서 peer의 변경을 작업 트리에 받아왔다
+    await expect(fs.access(path.join(local, 'peer.md'))).resolves.toBeUndefined();
   }, 30000);
 });
