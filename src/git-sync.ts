@@ -321,10 +321,32 @@ export class GitSync {
     return applyExists || mergeExists;
   }
 
+  private async recoverFromInterruptedRebase(): Promise<void> {
+    if (!(await this.hasRebaseInProgress())) return;
+    console.error('[private-journal] found interrupted rebase, recovering');
+    await this.resolveRebaseConflicts();
+    if (!(await this.hasRebaseInProgress())) return;
+    try {
+      await this.git(['rebase', '--abort']);
+      console.error('[private-journal] aborted unrecoverable rebase (local commits preserved)');
+    } catch (err) {
+      logGitFailure('[private-journal] git rebase abort failed (best-effort):', err);
+      // force clean up rebase directories as last resort
+      const gitDir = path.join(this.dataPath, '.git');
+      try {
+        await fs.rm(path.join(gitDir, 'rebase-merge'), { recursive: true, force: true });
+        await fs.rm(path.join(gitDir, 'rebase-apply'), { recursive: true, force: true });
+      } catch (cleanupErr) {
+        logGitFailure('[private-journal] cleanup of rebase directories failed (best-effort):', cleanupErr);
+      }
+    }
+  }
+
   async commitAndPush(message: string): Promise<void> {
     if (!this.enabled) return;
     try {
       await this.ensureRepo();
+      await this.recoverFromInterruptedRebase();
       await this.git(['add', '-A']);
       try {
       await this.git(['commit', '-m', message]);

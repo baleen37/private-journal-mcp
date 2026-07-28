@@ -401,3 +401,26 @@ describe('GitSync network timeout', () => {
     }
   }, 30000);
 });
+
+describe('GitSync rebase recovery', () => {
+  it('recovers when entering with an interrupted rebase and still commits', async () => {
+    const { base, remote } = await createSeedRemote('gs-recover-');
+    const dir = path.join(base, 'local');
+    const gs = new GitSync(dir, remote);
+    await gs.ensureRepo();
+    await configureGitIdentity(dir);
+
+    // rebase 진행 중 상태를 인위적으로 만든다
+    await fs.mkdir(path.join(dir, '.git', 'rebase-merge'), { recursive: true });
+
+    // 새 항목을 쓰고 sync
+    await fs.writeFile(path.join(dir, 'recovered.md'), md(500, 'recovered'), 'utf8');
+    await gs.commitAndPush('after interruption');
+
+    // rebase 상태가 정리되었다
+    await expect(fs.access(path.join(dir, '.git', 'rebase-merge'))).rejects.toBeDefined();
+    // 항목이 실제로 커밋되었다
+    const { stdout } = await run('git', ['log', '--oneline'], { cwd: dir });
+    expect(stdout).toContain('after interruption');
+  }, 30000);
+});
