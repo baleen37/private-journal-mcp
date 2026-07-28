@@ -41,7 +41,8 @@ function isRebaseConflictError(error: unknown): boolean {
   );
 }
 
-// 새 remote에 아직 브랜치가 없는 경우. 정상 상태이므로 에러로 로그하지 않는다.
+// fetch가 요청한 ref를 찾지 못한 경우. 이 메시지만으로는 "새 remote"인지
+// "브랜치명 오타"인지 구분할 수 없으므로 호출부에서 remote 상태를 함께 확인한다.
 function isMissingRemoteBranchError(error: unknown): boolean {
   return /couldn't find remote ref|no such ref was fetched/i.test(gitErrorText(error));
 }
@@ -294,6 +295,17 @@ export class GitSync {
     await this.withLock(() => this.pullUnlocked());
   }
 
+  // remote에 브랜치가 하나도 없으면 아직 아무것도 push하지 않은 새 repo다.
+  // 확인 자체가 실패하면 침묵하지 않는다(false) — 판단이 안 될 때는 로그를 남긴다.
+  private async remoteHasNoBranches(): Promise<boolean> {
+    try {
+      const { stdout } = await this.runNet(['ls-remote', '--heads', this.remote!]);
+      return stdout.trim().length === 0;
+    } catch {
+      return false;
+    }
+  }
+
   private async pullUnlocked(): Promise<void> {
     try {
       const branch = await this.currentBranch();
@@ -307,7 +319,11 @@ export class GitSync {
       // 아직 아무것도 push하지 않은 새 remote에는 브랜치가 없다. 실패가 아니라
       // 정상 상태이므로 조용히 넘어간다 — 첫 세션마다 에러가 보이면 사용자가
       // 설정이 잘못된 줄 안다.
-      if (isMissingRemoteBranchError(err)) return;
+      //
+      // 단 에러 메시지만으로는 "새 remote"와 "브랜치명 오타" / "서버에서 브랜치
+      // 삭제됨"을 구분할 수 없다(git이 같은 문자열을 낸다). 오타는 사용자가
+      // 반드시 알아야 하므로, remote에 브랜치가 하나도 없을 때만 침묵한다.
+      if (isMissingRemoteBranchError(err) && (await this.remoteHasNoBranches())) return;
       console.error('[private-journal] git pull failed (best-effort):', gitErrorText(err));
     }
   }

@@ -473,6 +473,26 @@ describe('GitSync empty remote', () => {
     expect(pullFailures).toHaveLength(0);
     errorSpy.mockRestore();
   }, 30000);
+
+  it('still logs a pull failure when the remote has branches but ours is missing', async () => {
+    // 오타난 브랜치명이나 서버에서 삭제된 브랜치는 사용자가 알아야 한다.
+    const { base, remote } = await createSeedRemote('gs-typo-');
+    const dir = path.join(base, 'local');
+    const gs = new GitSync(dir, remote);
+    await gs.ensureRepo();
+    await configureGitIdentity(dir);
+    // 로컬을 remote에 없는 브랜치로 옮긴다 — fetch가 같은 에러 문자열을 낸다
+    await run('git', ['checkout', '-b', 'branch-with-typo'], { cwd: dir });
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    await gs.pull();
+
+    const pullFailures = errorSpy.mock.calls.filter((c) =>
+      String(c[0]).includes('git pull failed'),
+    );
+    expect(pullFailures.length).toBeGreaterThan(0);
+    errorSpy.mockRestore();
+  }, 30000);
 });
 
 describe('GitSync rebase recovery', () => {
