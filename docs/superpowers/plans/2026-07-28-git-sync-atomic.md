@@ -879,6 +879,34 @@ git commit -m "feat(git-sync): raise push retries to 5 with exponential backoff"
 
 현재 `void this.git.commitAndPush(...)`는 push 완료를 기다리지 않는다. 세션이 종료되면 커밋이 로컬에만 남는다. 이게 "쓰는 순간 원격에 반영"을 깨는 마지막 구멍이다.
 
+**전역 상한 15초 (Task 5 이후 추가된 요구사항).** Task 5가 재시도를 5회로 늘렸으므로 `await`만 걸면 최악의 경우 약 111초가 걸린다 — 5회 × (fetch 10s + push 10s) + `ls-remote` 10s. 대화 중간에 저널을 쓰는 도구가 2분을 붙잡는 것은 허용할 수 없다.
+
+`SYNC_DEADLINE_MS = 15000`을 두고 `handleWrite`의 sync를 그 상한 안에서만 기다린다. 상한을 넘으면 기다림을 그만두고 도구는 리턴하되, **sync 자체는 백그라운드에서 계속 진행한다** — 커밋은 이미 로컬에 있고 push가 끝나면 원격에도 반영된다. 실패하거나 미완이면 다음 쓰기나 SessionStart 훅이 밀어낸다.
+
+```typescript
+const SYNC_DEADLINE_MS = 15000;
+
+// handleWrite 안에서
+const sync = this.git.commitAndPush(`journal: ${new Date().toISOString()}`)
+  .catch((error: unknown) => {
+    console.error('[private-journal] commitAndPush failed (best-effort):', error);
+  });
+
+let timer: NodeJS.Timeout | undefined;
+const deadline = new Promise<void>((resolve) => {
+  timer = setTimeout(() => {
+    console.error('[private-journal] sync exceeded 15s; continuing in background');
+    resolve();
+  }, SYNC_DEADLINE_MS);
+});
+await Promise.race([sync, deadline]);
+clearTimeout(timer);
+```
+
+`clearTimeout`이 필수다. 없으면 sync가 먼저 끝나도 타이머가 이벤트 루프를 15초간 붙잡아 프로세스 종료가 지연된다.
+
+이것은 인터벌 타이머가 아니라 일회성 마감 시한이므로 "주기적 동기화 금지" 제약과 충돌하지 않는다.
+
 - [ ] **Step 1: 실패하는 테스트 작성**
 
 `test/server.test.ts`에 추가:
