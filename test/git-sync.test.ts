@@ -725,7 +725,12 @@ describe('GitSync multi-machine concurrency', () => {
     await expect(fs.access(path.join(machineB, '.git', 'rebase-apply'))).rejects.toBeDefined();
   }, 60000);
 
-  it('converges when both machines push before pulling', async () => {
+  // 이 테스트는 재시도 메커니즘(경쟁 → 거부 → pull/rebase → 재시도 → 수렴)이
+  // 동작하는지를 검증한다. PUSH_RETRY_LIMIT이 5라는 것 자체를 증명하지는 않는다 —
+  // 로컬 파일시스템 remote로 2대만 경쟁시키면 2회로도 통과한다(실측 5/5).
+  // 5가 필요한 근거는 6개 클론 동시 경쟁 실험이며, 그때 1~5번째 시도가 모두 필요했다.
+  // 메커니즘이 아예 없으면(limit=1) 이 테스트가 실패한다(실측 3/3).
+  it('converges when both machines push before pulling (retry mechanism)', async () => {
     const { base, remote } = await createSeedRemote('gs-race-');
     const machineA = path.join(base, 'machineA');
     const machineB = path.join(base, 'machineB');
