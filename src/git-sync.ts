@@ -152,9 +152,13 @@ export class GitSync {
   }
 
   private async ensureRepoMetadata(): Promise<void> {
-    const attrsPath = path.join(this.dataPath, '.gitattributes');
-    if (!(await this.pathExists(attrsPath))) {
-      await fs.writeFile(attrsPath, '*.embedding binary\n', 'utf8');
+    try {
+      const attrsPath = path.join(this.dataPath, '.gitattributes');
+      if (!(await this.pathExists(attrsPath))) {
+        await fs.writeFile(attrsPath, '*.embedding binary\n', 'utf8');
+      }
+    } catch (err) {
+      logGitFailure('[private-journal] gitattributes setup failed (best-effort):', err);
     }
     // 록 파일은 데이터 repo에 커밋되면 안 된다.
     // .gitignore가 아니라 .git/info/exclude를 쓴다 — 사용자의 .gitignore를 건드리지 않고

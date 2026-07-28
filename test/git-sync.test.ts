@@ -401,6 +401,21 @@ describe('GitSync repo metadata', () => {
     const attrs = await fs.readFile(path.join(dir, '.gitattributes'), 'utf8');
     expect(attrs).toBe('# custom\n');
   }, 30000);
+
+  it('does not throw when .gitattributes write fails (read-only directory)', async () => {
+    const { base, remote } = await createSeedRemote('gs-attrs-readonly-');
+    const dir = path.join(base, 'local');
+    const gs = new GitSync(dir, remote);
+    await gs.ensureRepo(); // .gitattributes 생성
+
+    await fs.rm(path.join(dir, '.gitattributes'), { force: true });
+    await fs.chmod(dir, 0o555);
+    try {
+      await expect(gs.ensureRepo()).resolves.toBeUndefined();
+    } finally {
+      await fs.chmod(dir, 0o700);
+    }
+  }, 30000);
 });
 
 describe('resolveGitTimeoutMs', () => {
