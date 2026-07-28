@@ -10,6 +10,7 @@ const gitEnv = { ...process.env, GIT_EDITOR: process.env.GIT_EDITOR ?? 'true' };
 const DEFAULT_GIT_TIMEOUT_MS = 10000;
 const LOCK_FILENAME = '.private-journal-sync.lock';
 const STALE_LOCK_MS = 120000;
+const PUSH_RETRY_LIMIT = 5;
 
 export function resolveGitTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env.PRIVATE_JOURNAL_GIT_TIMEOUT_MS;
@@ -472,15 +473,19 @@ export class GitSync {
         return;
       }
       const branch = await this.currentBranch();
-      for (let attempt = 0; attempt < 2; attempt++) {
+      for (let attempt = 0; attempt < PUSH_RETRY_LIMIT; attempt++) {
         await this.pullUnlocked();
         try {
           await this.runNet(['push', '-u', 'origin', branch]);
           return;
         } catch (err) {
-          if (attempt === 1) {
+          if (attempt === PUSH_RETRY_LIMIT - 1) {
             logGitFailure('[private-journal] git push failed (best-effort):', err);
+            return;
           }
+          // 지수 백오프: 100ms, 200ms, 400ms, 800ms
+          const delay = 100 * 2 ** attempt;
+          await new Promise((resolve) => setTimeout(resolve, delay));
         }
       }
     } catch (err) {

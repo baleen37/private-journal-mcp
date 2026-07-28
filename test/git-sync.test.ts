@@ -676,3 +676,70 @@ describe('GitSync file lock', () => {
     await expect(fs.access(path.join(local, 'peer.md'))).resolves.toBeUndefined();
   }, 30000);
 });
+
+describe('GitSync multi-machine concurrency', () => {
+  it('preserves entries from two machines pushing alternately', async () => {
+    const { base, remote } = await createSeedRemote('gs-multi-');
+    const machineA = path.join(base, 'machineA');
+    const machineB = path.join(base, 'machineB');
+
+    const gsA = new GitSync(machineA, remote);
+    const gsB = new GitSync(machineB, remote);
+    await gsA.ensureRepo();
+    await gsB.ensureRepo();
+    await configureGitIdentity(machineA);
+    await configureGitIdentity(machineB);
+
+    // 각 기기가 서로 다른 파일명으로 항목을 쓴다 (실제로는 마이크로초 접미사)
+    await fs.writeFile(path.join(machineA, 'a-000001.md'), md(2000, 'from A'), 'utf8');
+    await fs.writeFile(path.join(machineB, 'b-000002.md'), md(2001, 'from B'), 'utf8');
+
+    // 번갈아 push — B는 A가 먼저 올린 것을 rebase해야 한다
+    await gsA.commitAndPush('entry from A');
+    await gsB.commitAndPush('entry from B');
+
+    // 세 번째 클론에서 확인: 양쪽 항목이 모두 살아있다
+    const verify = path.join(base, 'verify');
+    await run('git', ['clone', remote, verify]);
+    const files = await fs.readdir(verify);
+    expect(files).toContain('a-000001.md');
+    expect(files).toContain('b-000002.md');
+
+    // rebase가 깨끗하게 끝났다
+    await expect(fs.access(path.join(machineB, '.git', 'rebase-merge'))).rejects.toBeDefined();
+    await expect(fs.access(path.join(machineB, '.git', 'rebase-apply'))).rejects.toBeDefined();
+  }, 60000);
+
+  it('converges when both machines push before pulling', async () => {
+    const { base, remote } = await createSeedRemote('gs-race-');
+    const machineA = path.join(base, 'machineA');
+    const machineB = path.join(base, 'machineB');
+
+    const gsA = new GitSync(machineA, remote);
+    const gsB = new GitSync(machineB, remote);
+    await gsA.ensureRepo();
+    await gsB.ensureRepo();
+    await configureGitIdentity(machineA);
+    await configureGitIdentity(machineB);
+
+    // 양쪽이 서로를 모르는 상태에서 각각 쓴다
+    await fs.writeFile(path.join(machineA, 'race-a.md'), md(3000, 'race A'), 'utf8');
+    await fs.writeFile(path.join(machineB, 'race-b.md'), md(3001, 'race B'), 'utf8');
+
+    // 동시에 push 시도 — 한쪽은 반드시 거부당하고 재시도로 수습해야 한다
+    await Promise.all([
+      gsA.commitAndPush('race from A'),
+      gsB.commitAndPush('race from B'),
+    ]);
+
+    // 뒤처진 쪽이 따라잡을 기회를 준다
+    await gsA.commitAndPush('catch up A');
+    await gsB.commitAndPush('catch up B');
+
+    const verify = path.join(base, 'verify');
+    await run('git', ['clone', remote, verify]);
+    const files = await fs.readdir(verify);
+    expect(files).toContain('race-a.md');
+    expect(files).toContain('race-b.md');
+  }, 60000);
+});
