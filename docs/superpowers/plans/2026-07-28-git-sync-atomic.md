@@ -996,10 +996,19 @@ git commit -m "docs: document atomic git sync behavior and remote setup"
 - Consumes: Task 1~7 전체
 - Produces: 없음
 
-- [ ] **Step 1: 빌드 확인**
+- [ ] **Step 1: 빌드하고 dist/ 커밋**
+
+`dist/`는 git에 추적되며 플러그인으로 배포된다 (`.gitignore`의 `!dist/` 참고). Task 1~6이 `src/`만 바꿨으므로 `dist/`가 소스와 어긋난 상태다. 여기서 한 번에 맞춘다.
 
 Run: `npm run build`
 Expected: 타입 에러 없이 성공
+
+```bash
+git add dist/
+git commit -m "build: rebuild dist for git sync changes"
+```
+
+`git status --porcelain`으로 워킹 트리가 깨끗한지 확인한다.
 
 - [ ] **Step 2: 전체 테스트**
 
