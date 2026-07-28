@@ -1,6 +1,7 @@
 node_modules/
 *.log
 .DS_Store
+.private-journal-sync.lock
 
 # dist/ is ignored globally (~/.gitignore_global) but we ship the build with the plugin
 !dist/

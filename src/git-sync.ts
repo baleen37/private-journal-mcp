@@ -8,6 +8,8 @@ const run = promisify(execFile);
 const gitEnv = { ...process.env, GIT_EDITOR: process.env.GIT_EDITOR ?? 'true' };
 
 const DEFAULT_GIT_TIMEOUT_MS = 10000;
+const LOCK_FILENAME = '.private-journal-sync.lock';
+const STALE_LOCK_MS = 120000;
 
 export function resolveGitTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env.PRIVATE_JOURNAL_GIT_TIMEOUT_MS;
@@ -73,6 +75,52 @@ export class GitSync {
 
   private async hasGitDir(): Promise<boolean> {
     return fs.access(path.join(this.dataPath, '.git')).then(() => true).catch(() => false);
+  }
+
+  private get lockPath(): string {
+    return path.join(this.dataPath, LOCK_FILENAME);
+  }
+
+  private async isStaleLock(): Promise<boolean> {
+    try {
+      const raw = await fs.readFile(this.lockPath, 'utf8');
+      const { acquiredAt } = JSON.parse(raw) as { acquiredAt?: number };
+      if (typeof acquiredAt !== 'number') return true;
+      return Date.now() - acquiredAt > STALE_LOCK_MS;
+    } catch {
+      // 읽을 수 없거나 깨진 록은 stale로 본다
+      return true;
+    }
+  }
+
+  private async acquireLock(): Promise<boolean> {
+    const payload = JSON.stringify({ pid: process.pid, acquiredAt: Date.now() });
+    try {
+      await fs.mkdir(this.dataPath, { recursive: true });
+      await fs.writeFile(this.lockPath, payload, { encoding: 'utf8', flag: 'wx' });
+      return true;
+    } catch {
+      if (!(await this.isStaleLock())) return false;
+      try {
+        await fs.writeFile(this.lockPath, payload, 'utf8');
+        console.error('[private-journal] stole stale sync lock');
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  }
+
+  private async withLock<T>(fn: () => Promise<T>): Promise<T | undefined> {
+    if (!(await this.acquireLock())) {
+      console.error('[private-journal] sync already in progress, skipping');
+      return undefined;
+    }
+    try {
+      return await fn();
+    } finally {
+      await fs.rm(this.lockPath, { force: true }).catch(() => {});
+    }
   }
 
   async ensureRepo(): Promise<void> {
@@ -205,6 +253,10 @@ export class GitSync {
   async pull(): Promise<void> {
     if (!this.enabled) return;
     if (!(await this.hasGitDir())) return;
+    await this.withLock(() => this.pullUnlocked());
+  }
+
+  private async pullUnlocked(): Promise<void> {
     try {
       const branch = await this.currentBranch();
       await this.runNet(['fetch', 'origin', branch]);
@@ -373,6 +425,10 @@ export class GitSync {
 
   async commitAndPush(message: string): Promise<void> {
     if (!this.enabled) return;
+    await this.withLock(() => this.commitAndPushUnlocked(message));
+  }
+
+  private async commitAndPushUnlocked(message: string): Promise<void> {
     try {
       await this.ensureRepo();
       await this.recoverFromInterruptedRebase();
@@ -389,7 +445,7 @@ export class GitSync {
       }
       const branch = await this.currentBranch();
       for (let attempt = 0; attempt < 2; attempt++) {
-        await this.pull();
+        await this.pullUnlocked();
         try {
           await this.runNet(['push', '-u', 'origin', branch]);
           return;

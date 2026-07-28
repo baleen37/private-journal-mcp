@@ -513,3 +513,117 @@ describe('GitSync unmerged index protection', () => {
     expect(finalMd).not.toContain('<<<<<<<');
   }, 30000);
 });
+
+describe('GitSync file lock', () => {
+  it('skips sync when the lock is already held', async () => {
+    const { base, remote } = await createSeedRemote('gs-lock-');
+    const dir = path.join(base, 'local');
+    const gs = new GitSync(dir, remote);
+    await gs.ensureRepo();
+    await configureGitIdentity(dir);
+
+    // 다른 세션이 방금 록을 잡은 것처럼 만든다
+    await fs.writeFile(
+      path.join(dir, '.private-journal-sync.lock'),
+      JSON.stringify({ pid: 999999, acquiredAt: Date.now() }),
+      'utf8',
+    );
+
+    await fs.writeFile(path.join(dir, 'skipped.md'), md(600, 'skipped'), 'utf8');
+    await gs.commitAndPush('should be skipped');
+
+    const { stdout } = await run('git', ['log', '--oneline'], { cwd: dir });
+    expect(stdout).not.toContain('should be skipped');
+  }, 30000);
+
+  it('steals a stale lock', async () => {
+    const { base, remote } = await createSeedRemote('gs-stale-');
+    const dir = path.join(base, 'local');
+    const gs = new GitSync(dir, remote);
+    await gs.ensureRepo();
+    await configureGitIdentity(dir);
+
+    // 임계값(120초)보다 오래된 록
+    await fs.writeFile(
+      path.join(dir, '.private-journal-sync.lock'),
+      JSON.stringify({ pid: 999999, acquiredAt: Date.now() - 200000 }),
+      'utf8',
+    );
+
+    await fs.writeFile(path.join(dir, 'stolen.md'), md(700, 'stolen'), 'utf8');
+    await gs.commitAndPush('after stealing stale lock');
+
+    const { stdout } = await run('git', ['log', '--oneline'], { cwd: dir });
+    expect(stdout).toContain('after stealing stale lock');
+  }, 30000);
+
+  it('releases the lock after sync so the next call succeeds', async () => {
+    const { base, remote } = await createSeedRemote('gs-release-');
+    const dir = path.join(base, 'local');
+    const gs = new GitSync(dir, remote);
+    await gs.ensureRepo();
+    await configureGitIdentity(dir);
+
+    await fs.writeFile(path.join(dir, 'first.md'), md(800, 'first'), 'utf8');
+    await gs.commitAndPush('first entry');
+    // 록이 해제되어 파일이 남아있지 않다
+    await expect(
+      fs.access(path.join(dir, '.private-journal-sync.lock')),
+    ).rejects.toBeDefined();
+
+    await fs.writeFile(path.join(dir, 'second.md'), md(900, 'second'), 'utf8');
+    await gs.commitAndPush('second entry');
+
+    const { stdout } = await run('git', ['log', '--oneline'], { cwd: dir });
+    expect(stdout).toContain('first entry');
+    expect(stdout).toContain('second entry');
+  }, 30000);
+
+  it('picks up entries skipped by an earlier locked run', async () => {
+    const { base, remote } = await createSeedRemote('gs-catchup-');
+    const dir = path.join(base, 'local');
+    const gs = new GitSync(dir, remote);
+    await gs.ensureRepo();
+    await configureGitIdentity(dir);
+
+    const lockPath = path.join(dir, '.private-journal-sync.lock');
+    await fs.writeFile(lockPath, JSON.stringify({ pid: 999999, acquiredAt: Date.now() }), 'utf8');
+    await fs.writeFile(path.join(dir, 'deferred.md'), md(1000, 'deferred'), 'utf8');
+    await gs.commitAndPush('skipped run');
+
+    // 록이 풀린 뒤 다음 호출이 밀린 항목을 쓸어담는다
+    await fs.rm(lockPath, { force: true });
+    await gs.commitAndPush('catch-up run');
+
+    const { stdout } = await run('git', ['ls-files'], { cwd: dir });
+    expect(stdout).toContain('deferred.md');
+  }, 30000);
+
+  it('does not commit the lock file', async () => {
+    const { base, remote } = await createSeedRemote('gs-lockignore-');
+    const dir = path.join(base, 'local');
+    const gs = new GitSync(dir, remote);
+    await gs.ensureRepo();
+    await configureGitIdentity(dir);
+
+    await fs.writeFile(path.join(dir, 'entry2.md'), md(1100, 'e2'), 'utf8');
+    await gs.commitAndPush('with lock ignored');
+
+    const { stdout } = await run('git', ['ls-files'], { cwd: dir });
+    expect(stdout).not.toContain('.private-journal-sync.lock');
+  }, 30000);
+
+  it('does not deadlock when commitAndPush internally pulls', async () => {
+    const { base, remote, branch } = await createSeedRemote('gs-deadlock-');
+    const dir = path.join(base, 'local');
+    const gs = new GitSync(dir, remote);
+    await gs.ensureRepo();
+    await configureGitIdentity(dir);
+
+    await fs.writeFile(path.join(dir, 'pushed.md'), md(1200, 'pushed'), 'utf8');
+    await gs.commitAndPush('should actually push');
+
+    const { stdout } = await run('git', ['log', '--oneline', `origin/${branch}`], { cwd: dir });
+    expect(stdout).toContain('should actually push');
+  }, 30000);
+});
