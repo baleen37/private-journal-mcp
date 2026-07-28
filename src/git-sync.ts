@@ -358,6 +358,11 @@ export class GitSync {
         // 디렉터리를 지워도 인덱스의 unmerged 항목은 남는다. 그대로 두면
         // 다음 `add -A`가 conflict marker를 그대로 스테이징해서 저널 파일을
         // 손상시킨다. 인덱스를 HEAD로 되돌려 오염을 제거한다.
+        //
+        // 주의: 이 reset은 인덱스만 정리한다. 작업 트리 파일에 이미 박힌
+        // marker는 지우지 않는다. 여기 도달하기 전에 resolveRebaseConflicts()가
+        // checkout --ours/--theirs로 각 충돌 파일을 해결하므로 현재는 문제가
+        // 없지만, 그 순서가 바뀌면 marker가 남은 파일이 커밋될 수 있다.
         await this.git(['reset', '--mixed', 'HEAD']);
         console.error('[private-journal] force-cleaned unreadable rebase state');
       } catch (cleanupErr) {
