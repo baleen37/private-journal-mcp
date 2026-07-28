@@ -454,6 +454,49 @@ describe('GitSync network timeout', () => {
   }, 30000);
 });
 
+describe('GitSync pull-only machines', () => {
+  // 쓰기가 없는 기기는 커밋할 것이 없다. commitAndPush가 그 지점에서 그냥
+  // 리턴하면 원격 변경을 영구히 받지 못한다 — 실제로 기기 하나가 951건에
+  // 멈춘 채 954건을 못 받는 상태로 재현되었다.
+  it('still pulls remote changes when there is nothing local to commit', async () => {
+    const { base, remote, branch } = await createSeedRemote('gs-pullonly-');
+    const seed = path.join(base, 'seed');
+    // 실제 vault처럼 .gitattributes가 이미 원격에 커밋되어 있어야 한다.
+    // 없으면 ensureRepo가 그 파일을 만들어 항상 커밋할 것이 생기고,
+    // "커밋할 것 없음" 경로를 타지 않아 테스트가 버그를 놓친다.
+    await fs.writeFile(path.join(seed, '.gitattributes'), '*.embedding binary\n', 'utf8');
+    await run('git', ['add', '-A'], { cwd: seed });
+    await run('git', ['commit', '-m', 'add gitattributes'], { cwd: seed });
+    await run('git', ['push', '-q', 'origin', branch], { cwd: seed });
+
+    const dir = path.join(base, 'local');
+    await run('git', ['clone', remote, dir]);
+    await configureGitIdentity(dir);
+
+    // 로컬은 완전히 깨끗하다 — 커밋할 것이 하나도 없다
+    const gsCheck = new GitSync(dir, remote);
+    await gsCheck.ensureRepo();
+    const { stdout: dirty } = await run('git', ['status', '--porcelain'], { cwd: dir });
+    expect(dirty.trim()).toBe('');
+
+    // peer가 원격에 새 항목을 올린다
+    await fs.writeFile(path.join(seed, 'from-peer.md'), md(700, 'peer entry'), 'utf8');
+    await run('git', ['add', '-A'], { cwd: seed });
+    await run('git', ['commit', '-m', 'peer adds an entry'], { cwd: seed });
+    await run('git', ['push', '-q', 'origin', branch], { cwd: seed });
+
+    const gs = new GitSync(dir, remote);
+    await gs.commitAndPush('nothing of our own to commit');
+
+    // peer의 항목이 도착해야 한다
+    const arrived = await fs
+      .access(path.join(dir, 'from-peer.md'))
+      .then(() => true)
+      .catch(() => false);
+    expect(arrived).toBe(true);
+  }, 30000);
+});
+
 describe('GitSync empty remote', () => {
   it('does not log a pull failure when the remote has no branches yet', async () => {
     const base = await fs.mkdtemp(path.join(os.tmpdir(), 'gs-empty-'));

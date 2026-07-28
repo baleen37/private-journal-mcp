@@ -545,6 +545,10 @@ class GitSync {
             }
             catch (err) {
                 if (isNothingToCommitError(err)) {
+                    // 올릴 것이 없어도 받을 것은 있을 수 있다. 여기서 그냥 리턴하면
+                    // 쓰기가 없는 기기(주로 읽기만 하는 기기)는 원격 변경을 영구히
+                    // 받지 못한다. push 루프를 건너뛰되 pull은 반드시 한다.
+                    await this.pullUnlocked();
                     return;
                 }
                 logGitFailure('[private-journal] git commit failed (best-effort):', err);

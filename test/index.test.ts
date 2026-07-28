@@ -46,6 +46,28 @@ import { GitSync } from '../src/git-sync';
 import { PrivateJournalServer } from '../src/server';
 import { runSync, main } from '../src/index';
 
+// runSync falls back to process.env.PRIVATE_JOURNAL_GIT_REMOTE when opts.remote
+// is undefined, so a machine that has the var configured would otherwise see
+// these "no remote" tests take the enabled path and fail.
+const remoteEnvKeys = [
+  'PRIVATE_JOURNAL_GIT_REMOTE',
+  'CLAUDE_PLUGIN_OPTION_GIT_REMOTE',
+] as const;
+const inheritedRemoteEnv = Object.fromEntries(
+  remoteEnvKeys.map((key) => [key, process.env[key]]),
+) as Record<(typeof remoteEnvKeys)[number], string | undefined>;
+
+beforeAll(() => {
+  for (const key of remoteEnvKeys) delete process.env[key];
+});
+afterAll(() => {
+  for (const key of remoteEnvKeys) {
+    const value = inheritedRemoteEnv[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+});
+
 describe('runSync', () => {
   beforeEach(() => {
     ensureRepo.mockClear();
