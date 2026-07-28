@@ -113,9 +113,9 @@ export function resolveGitTimeoutMs(env: NodeJS.ProcessEnv = process.env): numbe
 `GitSync` 클래스 안에 네트워크 전용 실행 메서드를 추가한다 (`gitAt` 바로 아래, `src/git-sync.ts:58` 이후):
 
 ```typescript
-  private async runNet(args: string[], cwd?: string): Promise<{ stdout: string; stderr: string }> {
+  private async runNet(args: string[], cwd: string = this.dataPath): Promise<{ stdout: string; stderr: string }> {
     return run('git', args, {
-      ...(cwd ? { cwd } : {}),
+      cwd,
       env: gitEnv,
       timeout: resolveGitTimeoutMs(),
     });
