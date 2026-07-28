@@ -320,6 +320,10 @@ describe('PrivateJournalServer handlers', () => {
   });
 
   describe('handleWrite git sync', () => {
+    beforeEach(() => {
+      jest.spyOn(EmbeddingService.getInstance(), 'generateEmbedding').mockResolvedValue([0.1, 0.2]);
+    });
+
     it('waits for commitAndPush before returning', async () => {
       const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-await-'));
       const srv = new PrivateJournalServer({ dataPath: dir, remote: 'file:///nonexistent.git' });
