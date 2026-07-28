@@ -80,6 +80,10 @@ Claude Code:
 /plugin install /absolute/path/to/private-journal-mcp
 ```
 
+When Claude Code enables the plugin, it asks for an optional **Git remote**.
+Enter a remote URL to enable Git sync, or leave it blank for local-only storage.
+Run `/plugin configure` and select `private-journal-mcp` to change it later.
+
 Codex:
 
 ```bash
@@ -94,7 +98,9 @@ claude mcp add private-journal -- node /absolute/path/to/private-journal-mcp/dis
 
 ## Git Sync (optional)
 
-Git sync is enabled only when `PRIVATE_JOURNAL_GIT_REMOTE` is set.
+Claude Code passes this setting to the plugin as
+`CLAUDE_PLUGIN_OPTION_GIT_REMOTE`. Existing Codex and manual MCP setups can
+continue to use `PRIVATE_JOURNAL_GIT_REMOTE`:
 
 ```bash
 export PRIVATE_JOURNAL_GIT_REMOTE="git@github.com:youruser/my-journal.git"
@@ -147,7 +153,7 @@ Behavior:
 
 When installed as a plugin, the SessionStart sync hook is registered automatically
 (see `hooks/hooks.json`) — nothing to configure. It exits as a no-op unless
-`PRIVATE_JOURNAL_GIT_REMOTE` is set.
+a configured remote is available.
 
 To wire it up manually instead, add to `~/.claude/settings.json`:
 
