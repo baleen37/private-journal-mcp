@@ -82,7 +82,8 @@ Claude Code:
 
 When Claude Code enables the plugin, it asks for an optional **Git remote**.
 Enter a remote URL to enable Git sync, or leave it blank for local-only storage.
-Run `/plugin configure` and select `private-journal-mcp` to change it later.
+To change it later, open the plugin configuration dialog and select
+`private-journal-mcp`.
 
 Codex:
 
@@ -109,6 +110,8 @@ export PRIVATE_JOURNAL_GIT_REMOTE="git@github.com:youruser/my-journal.git"
 Recommended prerequisites:
 
 - You must already be authenticated for that remote via `gh auth login` or equivalent Git credentials.
+- Do not put credentials or tokens in the remote URL. Use SSH or a Git credential
+  helper instead.
 
 ### Setting up the remote
 

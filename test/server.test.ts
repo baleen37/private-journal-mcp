@@ -7,6 +7,14 @@ import { SearchService } from '../src/search';
 import { PrivateJournalServer } from '../src/server';
 import { JOURNAL_SECTIONS } from '../src/types';
 
+const remoteEnvKeys = [
+  'PRIVATE_JOURNAL_GIT_REMOTE',
+  'CLAUDE_PLUGIN_OPTION_GIT_REMOTE',
+] as const;
+const inheritedRemoteEnv = Object.fromEntries(
+  remoteEnvKeys.map((key) => [key, process.env[key]]),
+) as Record<(typeof remoteEnvKeys)[number], string | undefined>;
+
 type RegisteredTool = {
   name: string;
   config: {
@@ -36,8 +44,34 @@ async function collectRegisteredTools(srv: PrivateJournalServer): Promise<Regist
 }
 
 describe('PrivateJournalServer handlers', () => {
+  beforeAll(() => {
+    for (const key of remoteEnvKeys) delete process.env[key];
+  });
+
+  afterAll(() => {
+    for (const key of remoteEnvKeys) {
+      const value = inheritedRemoteEnv[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
   afterEach(() => {
     jest.restoreAllMocks();
+  });
+
+  it('keeps handlers local-only when no remote is supplied', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-'));
+    const srv = new PrivateJournalServer({ dataPath: dir });
+
+    expect((srv as any).git.enabled).toBe(false);
+  });
+
+  it('passes the normalized remote to GitSync', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-'));
+    const srv = new PrivateJournalServer({ dataPath: dir, remote: '  resolved.git  ' });
+
+    expect((srv as any).git.remote).toBe('resolved.git');
   });
 
   it('handleWrite rejects empty content', async () => {

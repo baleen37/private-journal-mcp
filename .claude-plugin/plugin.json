@@ -16,7 +16,10 @@
   "mcpServers": {
     "private-journal": {
       "command": "${CLAUDE_PLUGIN_ROOT}/bin/private-journal-mcp",
-      "args": []
+      "args": [],
+      "env": {
+        "CLAUDE_PLUGIN_OPTION_GIT_REMOTE": "${user_config.git_remote}"
+      }
     }
   }
 }

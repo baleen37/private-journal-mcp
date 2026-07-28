@@ -11,5 +11,8 @@ describe('Claude plugin manifest', () => {
       title: 'Git remote',
       description: '동기화할 Git remote URL입니다. 비워두면 local-only로 사용합니다.',
     });
+    expect(manifest.mcpServers?.['private-journal']?.env).toEqual({
+      CLAUDE_PLUGIN_OPTION_GIT_REMOTE: '${user_config.git_remote}',
+    });
   });
 });
