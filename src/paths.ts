@@ -15,3 +15,21 @@ export function resolveModelCachePath(env: NodeJS.ProcessEnv = process.env): str
   if (env.XDG_CACHE_HOME) return path.join(env.XDG_CACHE_HOME, 'private-journal', 'models');
   return path.join(homeDir(env), '.cache', 'private-journal', 'models');
 }
+
+export function resolveGitRemote(
+  explicit: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  let remote: string | undefined;
+
+  if (explicit !== undefined) {
+    remote = explicit;
+  } else if (Object.prototype.hasOwnProperty.call(env, 'CLAUDE_PLUGIN_OPTION_GIT_REMOTE')) {
+    remote = env.CLAUDE_PLUGIN_OPTION_GIT_REMOTE;
+  } else {
+    remote = env.PRIVATE_JOURNAL_GIT_REMOTE;
+  }
+
+  const normalized = remote?.trim();
+  return normalized || undefined;
+}

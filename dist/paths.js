@@ -35,6 +35,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.resolveDataPath = resolveDataPath;
 exports.resolveModelCachePath = resolveModelCachePath;
+exports.resolveGitRemote = resolveGitRemote;
 const path = __importStar(require("path"));
 const os = __importStar(require("os"));
 function homeDir(env) {
@@ -51,4 +52,18 @@ function resolveModelCachePath(env = process.env) {
     if (env.XDG_CACHE_HOME)
         return path.join(env.XDG_CACHE_HOME, 'private-journal', 'models');
     return path.join(homeDir(env), '.cache', 'private-journal', 'models');
+}
+function resolveGitRemote(explicit, env = process.env) {
+    let remote;
+    if (explicit !== undefined) {
+        remote = explicit;
+    }
+    else if (Object.prototype.hasOwnProperty.call(env, 'CLAUDE_PLUGIN_OPTION_GIT_REMOTE')) {
+        remote = env.CLAUDE_PLUGIN_OPTION_GIT_REMOTE;
+    }
+    else {
+        remote = env.PRIVATE_JOURNAL_GIT_REMOTE;
+    }
+    const normalized = remote?.trim();
+    return normalized || undefined;
 }

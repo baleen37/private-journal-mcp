@@ -6,10 +6,20 @@
   "author": {
     "name": "Jiho Lee"
   },
+  "userConfig": {
+    "git_remote": {
+      "type": "string",
+      "title": "Git remote",
+      "description": "동기화할 Git remote URL입니다. 비워두면 local-only로 사용합니다."
+    }
+  },
   "mcpServers": {
     "private-journal": {
       "command": "${CLAUDE_PLUGIN_ROOT}/bin/private-journal-mcp",
-      "args": []
+      "args": [],
+      "env": {
+        "CLAUDE_PLUGIN_OPTION_GIT_REMOTE": "${user_config.git_remote}"
+      }
     }
   }
 }

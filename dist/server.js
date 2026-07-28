@@ -88,7 +88,7 @@ class PrivateJournalServer {
         const embeddings = embeddings_1.EmbeddingService.getInstance();
         this.journal = new journal_1.JournalManager(this.dataPath, embeddings);
         this.search = new search_1.SearchService(this.dataPath, embeddings);
-        this.git = new git_sync_1.GitSync(this.dataPath, opts.remote ?? process.env.PRIVATE_JOURNAL_GIT_REMOTE);
+        this.git = new git_sync_1.GitSync(this.dataPath, (0, paths_1.resolveGitRemote)(opts.remote));
     }
     async handleWrite(args) {
         const section = args.section ?? DEFAULT_SECTION;
