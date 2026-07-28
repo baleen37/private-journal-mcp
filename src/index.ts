@@ -16,7 +16,6 @@ export async function runSync(opts: { dataPath?: string; remote?: string } = {})
   }
 
   await git.ensureRepo();
-  await git.pull();
   await git.commitAndPush(`journal sync: ${new Date().toISOString()}`);
 
   const search = new SearchService(dataPath, EmbeddingService.getInstance());
