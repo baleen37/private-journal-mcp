@@ -113,9 +113,9 @@ export function resolveGitTimeoutMs(env: NodeJS.ProcessEnv = process.env): numbe
 `GitSync` 클래스 안에 네트워크 전용 실행 메서드를 추가한다 (`gitAt` 바로 아래, `src/git-sync.ts:58` 이후):
 
 ```typescript
-  private async runNet(args: string[], cwd?: string): Promise<{ stdout: string; stderr: string }> {
+  private async runNet(args: string[], cwd: string = this.dataPath): Promise<{ stdout: string; stderr: string }> {
     return run('git', args, {
-      ...(cwd ? { cwd } : {}),
+      cwd,
       env: gitEnv,
       timeout: resolveGitTimeoutMs(),
     });
@@ -196,16 +196,22 @@ rebase가 중간에 끊기면 repo가 진행 중 상태로 남고, 이후 모든
 
 - [ ] **Step 1: 실패하는 테스트 작성**
 
+**주의 — 빈 `.git/rebase-merge`는 실제 실패 조건이 아니다.** 실측 확인: 빈 디렉터리만 있으면 git은 커밋을 정상 수락한다(exit 0). 진짜 중단된 rebase는 인덱스에 unmerged 항목이 있어서 `error: Committing is not possible because you have unmerged files`로 커밋이 거부된다.
+
+따라서 테스트가 **두 개** 필요하다.
+
+**(a) 읽을 수 없는 rebase 상태 정리** — 아래 fabricated 버전. 이것이 증명하는 것은 강제 정리 경로이며, 테스트 이름도 그렇게 지어야 한다.
+
 ```typescript
 describe('GitSync rebase recovery', () => {
-  it('recovers when entering with an interrupted rebase and still commits', async () => {
+  it('force-cleans unreadable rebase state and still commits', async () => {
     const { base, remote } = await createSeedRemote('gs-recover-');
     const dir = path.join(base, 'local');
     const gs = new GitSync(dir, remote);
     await gs.ensureRepo();
     await configureGitIdentity(dir);
 
-    // rebase 진행 중 상태를 인위적으로 만든다
+    // head-name이 없는 불완전한 상태 — git이 읽지 못하므로 강제 정리 대상이다
     await fs.mkdir(path.join(dir, '.git', 'rebase-merge'), { recursive: true });
 
     // 새 항목을 쓰고 sync
@@ -220,6 +226,17 @@ describe('GitSync rebase recovery', () => {
   }, 30000);
 });
 ```
+
+**(b) 진짜 충돌로 중단된 rebase** — 브리프가 의도한 주 경로(`resolveRebaseConflicts()`)를 실제로 타는 테스트. `test/git-sync.test.ts:191` 부근의 기존 `GitSync rebase conflict integration` 테스트가 실제 충돌을 만드는 패턴을 쓰고 있으니 그것을 따른다.
+
+구성:
+
+1. seed remote를 만들고 로컬 클론에서 같은 파일명을 서로 다른 `timestamp`로 커밋해 충돌을 만든다
+2. `git rebase`가 실제로 충돌로 멈추게 둔다 — `.git/rebase-merge/head-name`이 존재하는 온전한 중단 상태
+3. 이 상태에서 `commitAndPush`를 호출한다
+4. 검증: rebase 상태가 정리되고, 커밋이 실제로 되고, **`timestamp`가 큰 쪽이 살아남는다**
+
+4번의 마지막 항목이 핵심이다. 강제 정리 경로가 아니라 충돌 해결 경로를 탔음을 증명하는 유일한 신호다.
 
 - [ ] **Step 2: 테스트 실패 확인**
 
@@ -241,6 +258,23 @@ Expected: FAIL — rebase-merge 디렉터리가 남아 있거나 커밋이 안 �
       console.error('[private-journal] aborted unrecoverable rebase (local commits preserved)');
     } catch (err) {
       logGitFailure('[private-journal] git rebase abort failed (best-effort):', err);
+      // abort가 실패하는 경우는 두 가지다. rebase 상태 자체가 불완전해서 git이
+      // 읽지 못하는 경우와, 온전한 상태인데 다른 이유(권한, 디스크)로 실패한
+      // 경우. 전자만 강제 정리한다 — 온전한 상태를 지우면 git이 복구할 수
+      // 있었던 작업 트리를 파괴한다. 이 경로가 없으면 읽을 수 없는 rebase
+      // 상태에서 이후 모든 커밋이 영구히 실패한다.
+      const gitDir = path.join(this.dataPath, '.git');
+      if (await this.pathExists(path.join(gitDir, 'rebase-merge', 'head-name'))) {
+        console.error('[private-journal] rebase state looks intact; leaving it for manual recovery');
+        return;
+      }
+      try {
+        await fs.rm(path.join(gitDir, 'rebase-merge'), { recursive: true, force: true });
+        await fs.rm(path.join(gitDir, 'rebase-apply'), { recursive: true, force: true });
+        console.error('[private-journal] force-cleaned unreadable rebase state');
+      } catch (cleanupErr) {
+        logGitFailure('[private-journal] cleanup of rebase directories failed (best-effort):', cleanupErr);
+      }
     }
   }
 ```
@@ -249,7 +283,31 @@ Expected: FAIL — rebase-merge 디렉터리가 남아 있거나 커밋이 안 �
 
 ```typescript
       await this.recoverFromInterruptedRebase();
+      await this.abortIfIndexUnmerged();
 ```
+
+**데이터 손상 방어 (실측으로 확인된 필수 항목).** `git add -A`는 unmerged 경로를 내용 검증 없이 "해결됨"으로 스테이징한다. 인덱스에 충돌이 남아 있으면 conflict marker(`<<<<<<<`, `=======`, `>>>>>>>`)가 그대로 저널 파일에 박힌 채 커밋된다. 사용자 글이 깨진다.
+
+이 경로는 강제 정리를 통해서도 도달한다. `rebase-merge` 디렉터리를 지워도 **인덱스의 unmerged 항목은 남으므로**, `hasRebaseInProgress()`가 false가 된 뒤 `add -A`가 마커를 커밋한다. 그래서 강제 정리 블록에 `git reset --mixed HEAD`를 넣고(작업 트리 내용은 보존), 추가로 커밋 직전 방어선을 둔다:
+
+```typescript
+  // add -A는 unmerged 경로를 내용 검증 없이 스테이징한다. 인덱스에 충돌이
+  // 남아 있으면 conflict marker가 그대로 커밋되어 저널 파일이 손상된다.
+  private async abortIfIndexUnmerged(): Promise<void> {
+    try {
+      const { stdout } = await this.git(['diff', '--name-only', '--diff-filter=U']);
+      if (!stdout.trim()) return;
+      console.error('[private-journal] index still has unmerged paths; resetting to avoid committing conflict markers');
+      await this.git(['reset', '--mixed', 'HEAD']);
+    } catch (err) {
+      logGitFailure('[private-journal] unmerged index check failed (best-effort):', err);
+    }
+  }
+```
+
+`abortIfIndexUnmerged`는 **무조건** 호출한다. `hasRebaseInProgress()`로 가드하면 안 된다 — 실측 확인: rebase가 진행 중이고 복구가 실패한 상태에서 가드가 검사를 건너뛰면, 뒤따르는 `add -A` + `commit`이 마커를 그대로 커밋한다. 그 상황이 바로 이 방어선이 필요한 경우다.
+
+테스트는 커밋된 파일에 `<<<<<<<`가 **없음**을 명시적으로 검증해야 한다. `timestamp` 승자만 확인하면 부족하다 — 마커가 박힌 파일에는 양쪽 내용이 다 남아서 승자 문자열도 포함되기 때문이다.
 
 - [ ] **Step 4: 테스트 통과 확인**
 
@@ -821,6 +879,34 @@ git commit -m "feat(git-sync): raise push retries to 5 with exponential backoff"
 
 현재 `void this.git.commitAndPush(...)`는 push 완료를 기다리지 않는다. 세션이 종료되면 커밋이 로컬에만 남는다. 이게 "쓰는 순간 원격에 반영"을 깨는 마지막 구멍이다.
 
+**전역 상한 15초 (Task 5 이후 추가된 요구사항).** Task 5가 재시도를 5회로 늘렸으므로 `await`만 걸면 최악의 경우 약 111초가 걸린다 — 5회 × (fetch 10s + push 10s) + `ls-remote` 10s. 대화 중간에 저널을 쓰는 도구가 2분을 붙잡는 것은 허용할 수 없다.
+
+`SYNC_DEADLINE_MS = 15000`을 두고 `handleWrite`의 sync를 그 상한 안에서만 기다린다. 상한을 넘으면 기다림을 그만두고 도구는 리턴하되, **sync 자체는 백그라운드에서 계속 진행한다** — 커밋은 이미 로컬에 있고 push가 끝나면 원격에도 반영된다. 실패하거나 미완이면 다음 쓰기나 SessionStart 훅이 밀어낸다.
+
+```typescript
+const SYNC_DEADLINE_MS = 15000;
+
+// handleWrite 안에서
+const sync = this.git.commitAndPush(`journal: ${new Date().toISOString()}`)
+  .catch((error: unknown) => {
+    console.error('[private-journal] commitAndPush failed (best-effort):', error);
+  });
+
+let timer: NodeJS.Timeout | undefined;
+const deadline = new Promise<void>((resolve) => {
+  timer = setTimeout(() => {
+    console.error('[private-journal] sync exceeded 15s; continuing in background');
+    resolve();
+  }, SYNC_DEADLINE_MS);
+});
+await Promise.race([sync, deadline]);
+clearTimeout(timer);
+```
+
+`clearTimeout`이 필수다. 없으면 sync가 먼저 끝나도 타이머가 이벤트 루프를 15초간 붙잡아 프로세스 종료가 지연된다.
+
+이것은 인터벌 타이머가 아니라 일회성 마감 시한이므로 "주기적 동기화 금지" 제약과 충돌하지 않는다.
+
 - [ ] **Step 1: 실패하는 테스트 작성**
 
 `test/server.test.ts`에 추가:
@@ -996,10 +1082,19 @@ git commit -m "docs: document atomic git sync behavior and remote setup"
 - Consumes: Task 1~7 전체
 - Produces: 없음
 
-- [ ] **Step 1: 빌드 확인**
+- [ ] **Step 1: 빌드하고 dist/ 커밋**
+
+`dist/`는 git에 추적되며 플러그인으로 배포된다 (`.gitignore`의 `!dist/` 참고). Task 1~6이 `src/`만 바꿨으므로 `dist/`가 소스와 어긋난 상태다. 여기서 한 번에 맞춘다.
 
 Run: `npm run build`
 Expected: 타입 에러 없이 성공
+
+```bash
+git add dist/
+git commit -m "build: rebuild dist for git sync changes"
+```
+
+`git status --porcelain`으로 워킹 트리가 깨끗한지 확인한다.
 
 - [ ] **Step 2: 전체 테스트**
 

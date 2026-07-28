@@ -16,7 +16,6 @@ async function runSync(opts = {}) {
         return;
     }
     await git.ensureRepo();
-    await git.pull();
     await git.commitAndPush(`journal sync: ${new Date().toISOString()}`);
     const search = new search_1.SearchService(dataPath, embeddings_1.EmbeddingService.getInstance());
     await search.backfill().catch((error) => {

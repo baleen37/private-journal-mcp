@@ -7,6 +7,19 @@ import { parseFrontmatter } from './journal';
 const run = promisify(execFile);
 const gitEnv = { ...process.env, GIT_EDITOR: process.env.GIT_EDITOR ?? 'true' };
 
+const DEFAULT_GIT_TIMEOUT_MS = 10000;
+const LOCK_FILENAME = '.private-journal-sync.lock';
+const STALE_LOCK_MS = 120000;
+const PUSH_RETRY_LIMIT = 5;
+
+export function resolveGitTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.PRIVATE_JOURNAL_GIT_TIMEOUT_MS;
+  if (!raw) return DEFAULT_GIT_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_GIT_TIMEOUT_MS;
+  return parsed;
+}
+
 function gitErrorText(error: unknown): string {
   if (error && typeof error === 'object') {
     const stderr = 'stderr' in error ? error.stderr : undefined;
@@ -26,6 +39,12 @@ function isRebaseConflictError(error: unknown): boolean {
   return /(conflict|could not apply|resolve all conflicts manually|fix conflicts)/i.test(
     gitErrorText(error),
   );
+}
+
+// fetch가 요청한 ref를 찾지 못한 경우. 이 메시지만으로는 "새 remote"인지
+// "브랜치명 오타"인지 구분할 수 없으므로 호출부에서 remote 상태를 함께 확인한다.
+function isMissingRemoteBranchError(error: unknown): boolean {
+  return /couldn't find remote ref|no such ref was fetched/i.test(gitErrorText(error));
 }
 
 function logGitFailure(prefix: string, error: unknown): void {
@@ -53,29 +72,115 @@ export class GitSync {
     return run('git', args, { cwd, env: gitEnv });
   }
 
+  private async runNet(args: string[], cwd: string = this.dataPath): Promise<{ stdout: string; stderr: string }> {
+    return run('git', args, {
+      cwd,
+      env: gitEnv,
+      timeout: resolveGitTimeoutMs(),
+    });
+  }
+
   private async hasGitDir(): Promise<boolean> {
     return fs.access(path.join(this.dataPath, '.git')).then(() => true).catch(() => false);
   }
 
+  private get lockPath(): string {
+    return path.join(this.dataPath, LOCK_FILENAME);
+  }
+
+  private async isStaleLock(): Promise<boolean> {
+    try {
+      const raw = await fs.readFile(this.lockPath, 'utf8');
+      const { acquiredAt } = JSON.parse(raw) as { acquiredAt?: number };
+      if (typeof acquiredAt !== 'number') return true;
+      return Date.now() - acquiredAt > STALE_LOCK_MS;
+    } catch {
+      // 읽을 수 없거나 깨진 록은 stale로 본다
+      return true;
+    }
+  }
+
+  private async acquireLock(): Promise<boolean> {
+    const payload = JSON.stringify({ pid: process.pid, acquiredAt: Date.now() });
+    try {
+      await fs.mkdir(this.dataPath, { recursive: true });
+      await fs.writeFile(this.lockPath, payload, { encoding: 'utf8', flag: 'wx' });
+      return true;
+    } catch {
+      if (!(await this.isStaleLock())) return false;
+      try {
+        await fs.writeFile(this.lockPath, payload, 'utf8');
+        console.error('[private-journal] stole stale sync lock');
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  }
+
+  private async withLock<T>(fn: () => Promise<T>): Promise<T | undefined> {
+    if (!(await this.acquireLock())) {
+      console.error('[private-journal] sync already in progress, skipping');
+      return undefined;
+    }
+    try {
+      return await fn();
+    } finally {
+      await fs.rm(this.lockPath, { force: true }).catch(() => {});
+    }
+  }
+
   async ensureRepo(): Promise<void> {
     if (!this.enabled) return;
-    if (await this.hasGitDir()) return;
+    if (await this.hasGitDir()) {
+      await this.ensureRepoMetadata();
+      return;
+    }
     try {
       await fs.mkdir(this.dataPath, { recursive: true });
       try {
-        const { stdout } = await run('git', ['ls-remote', this.remote!]);
+        const { stdout } = await this.runNet(['ls-remote', this.remote!]);
         if (stdout.trim().length > 0) {
           await this.clonePopulatedRemote();
+          await this.ensureRepoMetadata();
           return;
         }
         await this.git(['init']);
         await this.git(['remote', 'add', 'origin', this.remote!]);
+        await this.ensureRepoMetadata();
       } catch (err) {
         logGitFailure('[private-journal] git ls-remote failed (best-effort):', err);
         return;
       }
     } catch (err) {
       logGitFailure('[private-journal] git ensureRepo failed (best-effort):', err);
+    }
+  }
+
+  private async ensureRepoMetadata(): Promise<void> {
+    try {
+      const attrsPath = path.join(this.dataPath, '.gitattributes');
+      if (!(await this.pathExists(attrsPath))) {
+        await fs.writeFile(attrsPath, '*.embedding binary\n', 'utf8');
+      }
+    } catch (err) {
+      logGitFailure('[private-journal] gitattributes setup failed (best-effort):', err);
+    }
+    // 록 파일은 데이터 repo에 커밋되면 안 된다.
+    // .gitignore가 아니라 .git/info/exclude를 쓴다 — 사용자의 .gitignore를 건드리지 않고
+    // 원격에 퍼지지도 않는다.
+    const excludePath = path.join(this.dataPath, '.git', 'info', 'exclude');
+    try {
+      await fs.mkdir(path.dirname(excludePath), { recursive: true });
+      let current = '';
+      try {
+        current = await fs.readFile(excludePath, 'utf8');
+      } catch { /* 파일이 없으면 새로 만든다 */ }
+      if (!current.includes(LOCK_FILENAME)) {
+        await fs.appendFile(excludePath, `\n${LOCK_FILENAME}\n`, 'utf8');
+      }
+    } catch (err) {
+      logGitFailure('[private-journal] git exclude setup failed (best-effort):', err);
     }
   }
 
@@ -101,7 +206,7 @@ export class GitSync {
 
   private async defaultRemoteBranch(): Promise<string> {
     try {
-      const { stdout } = await run('git', ['ls-remote', '--symref', this.remote!, 'HEAD']);
+      const { stdout } = await this.runNet(['ls-remote', '--symref', this.remote!, 'HEAD']);
       const m = stdout.match(/ref:\s+refs\/heads\/(\S+)\s+HEAD/);
       if (m) return m[1];
     } catch { /* ignore */ }
@@ -136,7 +241,7 @@ export class GitSync {
     const parentDir = await fs.mkdtemp(path.join(path.dirname(this.dataPath), '.private-journal-clone-'));
     const clonePath = path.join(parentDir, 'repo');
     try {
-      await run('git', ['clone', '--no-checkout', this.remote!, clonePath]);
+      await this.runNet(['clone', '--no-checkout', this.remote!, clonePath]);
       const branch = await this.checkoutableRemoteBranch(clonePath);
       if (!branch) {
         console.error('[private-journal] git clone found no remote branches (best-effort)');
@@ -187,13 +292,38 @@ export class GitSync {
   async pull(): Promise<void> {
     if (!this.enabled) return;
     if (!(await this.hasGitDir())) return;
+    await this.withLock(() => this.pullUnlocked());
+  }
+
+  // remote에 브랜치가 하나도 없으면 아직 아무것도 push하지 않은 새 repo다.
+  // 확인 자체가 실패하면 침묵하지 않는다(false) — 판단이 안 될 때는 로그를 남긴다.
+  private async remoteHasNoBranches(): Promise<boolean> {
     try {
-      await this.git(['pull', '--rebase', '--autostash', 'origin', await this.currentBranch()]);
+      const { stdout } = await this.runNet(['ls-remote', '--heads', this.remote!]);
+      return stdout.trim().length === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  private async pullUnlocked(): Promise<void> {
+    try {
+      const branch = await this.currentBranch();
+      await this.runNet(['fetch', 'origin', branch]);
+      await this.git(['rebase', '--autostash', `origin/${branch}`]);
     } catch (err) {
       if (isRebaseConflictError(err)) {
         await this.resolveRebaseConflicts();
         return;
       }
+      // 아직 아무것도 push하지 않은 새 remote에는 브랜치가 없다. 실패가 아니라
+      // 정상 상태이므로 조용히 넘어간다 — 첫 세션마다 에러가 보이면 사용자가
+      // 설정이 잘못된 줄 안다.
+      //
+      // 단 에러 메시지만으로는 "새 remote"와 "브랜치명 오타" / "서버에서 브랜치
+      // 삭제됨"을 구분할 수 없다(git이 같은 문자열을 낸다). 오타는 사용자가
+      // 반드시 알아야 하므로, remote에 브랜치가 하나도 없을 때만 침묵한다.
+      if (isMissingRemoteBranchError(err) && (await this.remoteHasNoBranches())) return;
       console.error('[private-journal] git pull failed (best-effort):', gitErrorText(err));
     }
   }
@@ -301,10 +431,66 @@ export class GitSync {
     return applyExists || mergeExists;
   }
 
+  private async abortIfIndexUnmerged(): Promise<void> {
+    try {
+      const { stdout } = await this.git(['diff', '--name-only', '--diff-filter=U']);
+      if (!stdout.trim()) return;
+      console.error('[private-journal] index still has unmerged paths; resetting to avoid committing conflict markers');
+      await this.git(['reset', '--mixed', 'HEAD']);
+    } catch (err) {
+      logGitFailure('[private-journal] unmerged index check failed (best-effort):', err);
+    }
+  }
+
+  private async recoverFromInterruptedRebase(): Promise<void> {
+    if (!(await this.hasRebaseInProgress())) return;
+    console.error('[private-journal] found interrupted rebase, recovering');
+    await this.resolveRebaseConflicts();
+    if (!(await this.hasRebaseInProgress())) return;
+    try {
+      await this.git(['rebase', '--abort']);
+      console.error('[private-journal] aborted unrecoverable rebase (local commits preserved)');
+    } catch (err) {
+      logGitFailure('[private-journal] git rebase abort failed (best-effort):', err);
+      // abort가 실패하는 경우는 두 가지다. rebase 상태 자체가 불완전해서
+      // git이 읽지 못하는 경우와, 온전한 상태인데 다른 이유로 실패한 경우.
+      // 전자만 강제 정리한다 — 온전한 상태를 지우면 git이 복구할 수 있었던
+      // 작업 트리를 파괴한다.
+      const gitDir = path.join(this.dataPath, '.git');
+      const salvageable = await this.pathExists(path.join(gitDir, 'rebase-merge', 'head-name'));
+      if (salvageable) {
+        console.error('[private-journal] rebase state looks intact; leaving it for manual recovery');
+        return;
+      }
+      try {
+        await fs.rm(path.join(gitDir, 'rebase-merge'), { recursive: true, force: true });
+        await fs.rm(path.join(gitDir, 'rebase-apply'), { recursive: true, force: true });
+        // 디렉터리를 지워도 인덱스의 unmerged 항목은 남는다. 그대로 두면
+        // 다음 `add -A`가 conflict marker를 그대로 스테이징해서 저널 파일을
+        // 손상시킨다. 인덱스를 HEAD로 되돌려 오염을 제거한다.
+        //
+        // 주의: 이 reset은 인덱스만 정리한다. 작업 트리 파일에 이미 박힌
+        // marker는 지우지 않는다. 여기 도달하기 전에 resolveRebaseConflicts()가
+        // checkout --ours/--theirs로 각 충돌 파일을 해결하므로 현재는 문제가
+        // 없지만, 그 순서가 바뀌면 marker가 남은 파일이 커밋될 수 있다.
+        await this.git(['reset', '--mixed', 'HEAD']);
+        console.error('[private-journal] force-cleaned unreadable rebase state');
+      } catch (cleanupErr) {
+        logGitFailure('[private-journal] cleanup of rebase directories failed (best-effort):', cleanupErr);
+      }
+    }
+  }
+
   async commitAndPush(message: string): Promise<void> {
     if (!this.enabled) return;
+    await this.withLock(() => this.commitAndPushUnlocked(message));
+  }
+
+  private async commitAndPushUnlocked(message: string): Promise<void> {
     try {
       await this.ensureRepo();
+      await this.recoverFromInterruptedRebase();
+      await this.abortIfIndexUnmerged();
       await this.git(['add', '-A']);
       try {
       await this.git(['commit', '-m', message]);
@@ -316,15 +502,19 @@ export class GitSync {
         return;
       }
       const branch = await this.currentBranch();
-      for (let attempt = 0; attempt < 2; attempt++) {
-        await this.pull();
+      for (let attempt = 0; attempt < PUSH_RETRY_LIMIT; attempt++) {
+        await this.pullUnlocked();
         try {
-          await this.git(['push', '-u', 'origin', branch]);
+          await this.runNet(['push', '-u', 'origin', branch]);
           return;
         } catch (err) {
-          if (attempt === 1) {
+          if (attempt === PUSH_RETRY_LIMIT - 1) {
             logGitFailure('[private-journal] git push failed (best-effort):', err);
+            return;
           }
+          // 지수 백오프: 100ms, 200ms, 400ms, 800ms
+          const delay = 100 * 2 ** attempt;
+          await new Promise((resolve) => setTimeout(resolve, delay));
         }
       }
     } catch (err) {

@@ -284,4 +284,33 @@ describe('PrivateJournalServer handlers', () => {
 
     expect(order).toEqual(['ensureRepo', 'backfill', 'connect']);
   });
+
+  describe('handleWrite git sync', () => {
+    it('waits for commitAndPush before returning', async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-await-'));
+      const srv = new PrivateJournalServer({ dataPath: dir, remote: 'file:///nonexistent.git' });
+
+      let finished = false;
+      jest.spyOn((srv as unknown as { git: { commitAndPush: () => Promise<void> } }).git, 'commitAndPush')
+        .mockImplementation(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          finished = true;
+        });
+
+      await srv.handleWrite({ content: 'sync test' });
+      // await였다면 리턴 시점에 이미 끝났어야 한다
+      expect(finished).toBe(true);
+    });
+
+    it('still succeeds when commitAndPush rejects', async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-fail-'));
+      const srv = new PrivateJournalServer({ dataPath: dir, remote: 'file:///nonexistent.git' });
+
+      jest.spyOn((srv as unknown as { git: { commitAndPush: () => Promise<void> } }).git, 'commitAndPush')
+        .mockRejectedValue(new Error('remote exploded'));
+
+      const result = await srv.handleWrite({ content: 'still works' });
+      expect(result.path).toContain('.md');
+    });
+  });
 });

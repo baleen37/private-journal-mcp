@@ -46,6 +46,7 @@ const paths_1 = require("./paths");
 const search_1 = require("./search");
 const types_1 = require("./types");
 const DEFAULT_SECTION = 'observations';
+const SYNC_DEADLINE_MS = 15000;
 function formatTimestamp(timestamp) {
     const date = new Date(timestamp);
     const pad = (value) => value.toString().padStart(2, '0');
@@ -96,9 +97,18 @@ class PrivateJournalServer {
             throw new Error('At least one journal section must have content.');
         }
         const entryPath = await this.journal.write(sections);
-        void this.git.commitAndPush(`journal: ${new Date().toISOString()}`).catch((error) => {
+        const sync = this.git.commitAndPush(`journal: ${new Date().toISOString()}`).catch((error) => {
             console.error('[private-journal] commitAndPush failed (best-effort):', error);
         });
+        let timer;
+        const deadline = new Promise((resolve) => {
+            timer = setTimeout(() => {
+                console.error('[private-journal] sync exceeded 15s; continuing in background');
+                resolve();
+            }, SYNC_DEADLINE_MS);
+        });
+        await Promise.race([sync, deadline]);
+        clearTimeout(timer);
         return { path: entryPath };
     }
     async handleSearch(args) {

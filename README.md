@@ -104,10 +104,44 @@ Recommended prerequisites:
 
 - You must already be authenticated for that remote via `gh auth login` or equivalent Git credentials.
 
+### Setting up the remote
+
+Create a private repo and point the server at it:
+
+```bash
+gh repo create <your-account>/private-journal-vault --private
+export PRIVATE_JOURNAL_GIT_REMOTE=git@github.com:<your-account>/private-journal-vault.git
+```
+
+If the remote is empty, the data directory is initialized in place (and stays
+silent — no error — on the first sync). If the remote already has entries, it
+is cloned and merged with whatever is already local.
+
 Behavior:
 
-- Right after a `write_journal` save, it attempts `commit + pull --rebase + push` on a best-effort basis.
-- `node dist/index.js sync` handles `pull` and pushing any pending commits before a session starts.
+- A `write_journal` save **waits** for `commit + fetch + rebase + push` to
+  finish, capped at 15s (`SYNC_DEADLINE_MS`). If it takes longer, the tool
+  returns anyway and the sync keeps running in the background; the commit is
+  already local, so the next write or the SessionStart hook will push it.
+- Push is retried up to 5 times (`PUSH_RETRY_LIMIT`) with exponential backoff
+  (100/200/400/800ms), which lets several machines writing at once converge
+  without losing entries.
+- Network commands (`fetch`, `push`, `ls-remote`, `clone`) time out after 10s,
+  tunable via `PRIVATE_JOURNAL_GIT_TIMEOUT_MS`. Local rebase is never
+  interrupted — cutting a rebase short would leave the repo unable to commit.
+- If a previous run left an interrupted rebase, the next sync resolves it, or
+  aborts it, or as a last resort force-cleans unreadable rebase state. Local
+  commits are preserved either way.
+- Within one machine, sync is serialized by a `.private-journal-sync.lock`
+  file in the data directory. If another session already holds it, this run
+  is skipped (not queued); the next run picks up whatever is pending. Locks
+  older than 120s are considered stale and stolen.
+- Reads (`search_journal`, `list_journal`, `read_journal`) do not pull. A
+  session sees the snapshot from when it started, plus anything it wrote
+  itself. Changes from other machines arrive at the next session start or
+  the next write.
+- `node dist/index.js sync` pulls and pushes any pending commits before a
+  session starts.
 
 ## SessionStart sync hook
 
@@ -140,3 +174,5 @@ To wire it up manually instead, add to `~/.claude/settings.json`:
 - When two entries share a filename, the one with the larger frontmatter `timestamp` wins.
 - If the `timestamp` is identical, the local version takes precedence.
 - The `.embedding` file may be regenerated based on the adopted Markdown.
+- `.gitattributes` marks `*.embedding` as binary, so Git never tries to
+  merge vector files line by line.
