@@ -1,4 +1,4 @@
-import { chooseConflictWinner, GitSync } from '../src/git-sync';
+import { chooseConflictWinner, GitSync, resolveGitTimeoutMs } from '../src/git-sync';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs/promises';
@@ -293,6 +293,7 @@ describe('GitSync best-effort error handling', () => {
 
     jest.spyOn(gs as any, 'hasGitDir').mockResolvedValue(true);
     jest.spyOn(gs as any, 'currentBranch').mockResolvedValue('main');
+    (gs as any).runNet = jest.fn().mockResolvedValue({ stdout: '', stderr: '' });
     (gs as any).git = jest.fn().mockRejectedValue(error);
 
     await expect(gs.pull()).resolves.toBeUndefined();
@@ -345,6 +346,7 @@ describe('GitSync best-effort error handling', () => {
 
     jest.spyOn(gs as any, 'hasGitDir').mockResolvedValue(true);
     jest.spyOn(gs as any, 'currentBranch').mockResolvedValue('main');
+    (gs as any).runNet = jest.fn().mockResolvedValue({ stdout: '', stderr: '' });
     (gs as any).git = git;
 
     await expect(gs.pull()).resolves.toBeUndefined();
@@ -362,4 +364,40 @@ describe('GitSync best-effort error handling', () => {
       '[private-journal] git rebase still unresolved after conflict handling (best-effort)',
     );
   });
+});
+
+describe('resolveGitTimeoutMs', () => {
+  it('defaults to 10000ms', () => {
+    expect(resolveGitTimeoutMs({})).toBe(10000);
+  });
+  it('reads PRIVATE_JOURNAL_GIT_TIMEOUT_MS', () => {
+    expect(resolveGitTimeoutMs({ PRIVATE_JOURNAL_GIT_TIMEOUT_MS: '500' })).toBe(500);
+  });
+  it('ignores non-numeric values', () => {
+    expect(resolveGitTimeoutMs({ PRIVATE_JOURNAL_GIT_TIMEOUT_MS: 'abc' })).toBe(10000);
+  });
+  it('ignores zero and negative values', () => {
+    expect(resolveGitTimeoutMs({ PRIVATE_JOURNAL_GIT_TIMEOUT_MS: '0' })).toBe(10000);
+    expect(resolveGitTimeoutMs({ PRIVATE_JOURNAL_GIT_TIMEOUT_MS: '-5' })).toBe(10000);
+  });
+});
+
+describe('GitSync network timeout', () => {
+  it('gives up on an unreachable remote and leaves no rebase state', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gs-timeout-'));
+    // 라우팅되지 않는 주소 — 연결이 걸린 상태로 매달린다
+    const gs = new GitSync(dir, 'git://10.255.255.1/nope.git');
+    process.env.PRIVATE_JOURNAL_GIT_TIMEOUT_MS = '1000';
+    try {
+      const started = Date.now();
+      await gs.ensureRepo();
+      // 타임아웃 상한 안에서 돌아와야 한다 (여유 있게 15초)
+      expect(Date.now() - started).toBeLessThan(15000);
+      // rebase 진행 중 상태가 남지 않아야 한다
+      await expect(fs.access(path.join(dir, '.git', 'rebase-merge'))).rejects.toBeDefined();
+      await expect(fs.access(path.join(dir, '.git', 'rebase-apply'))).rejects.toBeDefined();
+    } finally {
+      delete process.env.PRIVATE_JOURNAL_GIT_TIMEOUT_MS;
+    }
+  }, 30000);
 });

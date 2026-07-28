@@ -7,6 +7,16 @@ import { parseFrontmatter } from './journal';
 const run = promisify(execFile);
 const gitEnv = { ...process.env, GIT_EDITOR: process.env.GIT_EDITOR ?? 'true' };
 
+const DEFAULT_GIT_TIMEOUT_MS = 10000;
+
+export function resolveGitTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.PRIVATE_JOURNAL_GIT_TIMEOUT_MS;
+  if (!raw) return DEFAULT_GIT_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_GIT_TIMEOUT_MS;
+  return parsed;
+}
+
 function gitErrorText(error: unknown): string {
   if (error && typeof error === 'object') {
     const stderr = 'stderr' in error ? error.stderr : undefined;
@@ -53,6 +63,14 @@ export class GitSync {
     return run('git', args, { cwd, env: gitEnv });
   }
 
+  private async runNet(args: string[], cwd: string = this.dataPath): Promise<{ stdout: string; stderr: string }> {
+    return run('git', args, {
+      cwd,
+      env: gitEnv,
+      timeout: resolveGitTimeoutMs(),
+    });
+  }
+
   private async hasGitDir(): Promise<boolean> {
     return fs.access(path.join(this.dataPath, '.git')).then(() => true).catch(() => false);
   }
@@ -63,7 +81,7 @@ export class GitSync {
     try {
       await fs.mkdir(this.dataPath, { recursive: true });
       try {
-        const { stdout } = await run('git', ['ls-remote', this.remote!]);
+        const { stdout } = await this.runNet(['ls-remote', this.remote!]);
         if (stdout.trim().length > 0) {
           await this.clonePopulatedRemote();
           return;
@@ -101,7 +119,7 @@ export class GitSync {
 
   private async defaultRemoteBranch(): Promise<string> {
     try {
-      const { stdout } = await run('git', ['ls-remote', '--symref', this.remote!, 'HEAD']);
+      const { stdout } = await this.runNet(['ls-remote', '--symref', this.remote!, 'HEAD']);
       const m = stdout.match(/ref:\s+refs\/heads\/(\S+)\s+HEAD/);
       if (m) return m[1];
     } catch { /* ignore */ }
@@ -136,7 +154,7 @@ export class GitSync {
     const parentDir = await fs.mkdtemp(path.join(path.dirname(this.dataPath), '.private-journal-clone-'));
     const clonePath = path.join(parentDir, 'repo');
     try {
-      await run('git', ['clone', '--no-checkout', this.remote!, clonePath]);
+      await this.runNet(['clone', '--no-checkout', this.remote!, clonePath]);
       const branch = await this.checkoutableRemoteBranch(clonePath);
       if (!branch) {
         console.error('[private-journal] git clone found no remote branches (best-effort)');
@@ -188,7 +206,9 @@ export class GitSync {
     if (!this.enabled) return;
     if (!(await this.hasGitDir())) return;
     try {
-      await this.git(['pull', '--rebase', '--autostash', 'origin', await this.currentBranch()]);
+      const branch = await this.currentBranch();
+      await this.runNet(['fetch', 'origin', branch]);
+      await this.git(['rebase', '--autostash', `origin/${branch}`]);
     } catch (err) {
       if (isRebaseConflictError(err)) {
         await this.resolveRebaseConflicts();
@@ -319,7 +339,7 @@ export class GitSync {
       for (let attempt = 0; attempt < 2; attempt++) {
         await this.pull();
         try {
-          await this.git(['push', '-u', 'origin', branch]);
+          await this.runNet(['push', '-u', 'origin', branch]);
           return;
         } catch (err) {
           if (attempt === 1) {
