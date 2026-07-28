@@ -261,8 +261,9 @@ describe('GitSync best-effort error handling', () => {
       stdout: '',
     });
     const git = jest.fn()
-      .mockResolvedValueOnce({ stdout: '', stderr: '' })
-      .mockRejectedValueOnce(error);
+      .mockResolvedValueOnce({ stdout: '', stderr: '' }) // diff --diff-filter=U (abortIfIndexUnmerged)
+      .mockResolvedValueOnce({ stdout: '', stderr: '' }) // add -A
+      .mockRejectedValueOnce(error); // commit
     const ensureRepo = jest.spyOn(gs, 'ensureRepo').mockResolvedValue();
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
 

@@ -370,12 +370,8 @@ export class GitSync {
     if (!this.enabled) return;
     try {
       await this.ensureRepo();
-      const hadRebaseInProgress = await this.hasRebaseInProgress();
       await this.recoverFromInterruptedRebase();
-      // 재시작 후 인덱스에 unmerged 항목이 남을 수 있다. 마커가 커밋되는 것을 방지한다.
-      if (hadRebaseInProgress) {
-        await this.abortIfIndexUnmerged();
-      }
+      await this.abortIfIndexUnmerged();
       await this.git(['add', '-A']);
       try {
       await this.git(['commit', '-m', message]);
