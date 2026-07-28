@@ -41,6 +41,11 @@ function isRebaseConflictError(error: unknown): boolean {
   );
 }
 
+// 새 remote에 아직 브랜치가 없는 경우. 정상 상태이므로 에러로 로그하지 않는다.
+function isMissingRemoteBranchError(error: unknown): boolean {
+  return /couldn't find remote ref|no such ref was fetched/i.test(gitErrorText(error));
+}
+
 function logGitFailure(prefix: string, error: unknown): void {
   console.error(prefix, gitErrorText(error));
 }
@@ -299,6 +304,10 @@ export class GitSync {
         await this.resolveRebaseConflicts();
         return;
       }
+      // 아직 아무것도 push하지 않은 새 remote에는 브랜치가 없다. 실패가 아니라
+      // 정상 상태이므로 조용히 넘어간다 — 첫 세션마다 에러가 보이면 사용자가
+      // 설정이 잘못된 줄 안다.
+      if (isMissingRemoteBranchError(err)) return;
       console.error('[private-journal] git pull failed (best-effort):', gitErrorText(err));
     }
   }

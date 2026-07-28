@@ -454,6 +454,27 @@ describe('GitSync network timeout', () => {
   }, 30000);
 });
 
+describe('GitSync empty remote', () => {
+  it('does not log a pull failure when the remote has no branches yet', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'gs-empty-'));
+    const remote = path.join(base, 'remote.git');
+    await run('git', ['init', '--bare', remote]);
+    const dir = path.join(base, 'local');
+    const gs = new GitSync(dir, remote);
+    await gs.ensureRepo();
+    await configureGitIdentity(dir);
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    await gs.pull();
+
+    const pullFailures = errorSpy.mock.calls.filter((c) =>
+      String(c[0]).includes('git pull failed'),
+    );
+    expect(pullFailures).toHaveLength(0);
+    errorSpy.mockRestore();
+  }, 30000);
+});
+
 describe('GitSync rebase recovery', () => {
   it('force-cleans unreadable rebase state and still commits', async () => {
     const { base, remote } = await createSeedRemote('gs-recover-unreadable-');
