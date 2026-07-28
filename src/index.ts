@@ -2,13 +2,13 @@
 
 import { EmbeddingService } from './embeddings';
 import { GitSync } from './git-sync';
-import { resolveDataPath } from './paths';
+import { resolveDataPath, resolveGitRemote } from './paths';
 import { SearchService } from './search';
 import { PrivateJournalServer } from './server';
 
 export async function runSync(opts: { dataPath?: string; remote?: string } = {}): Promise<void> {
   const dataPath = opts.dataPath ?? resolveDataPath();
-  const remote = opts.remote ?? process.env.PRIVATE_JOURNAL_GIT_REMOTE;
+  const remote = resolveGitRemote(opts.remote);
   const git = new GitSync(dataPath, remote);
 
   if (!git.enabled) {

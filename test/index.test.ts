@@ -35,11 +35,14 @@ jest.mock('../src/embeddings', () => ({
 }));
 
 const resolveDataPath = jest.fn(() => '/resolved/data/path');
+const resolveGitRemote = jest.fn((remote?: string) => remote);
 
 jest.mock('../src/paths', () => ({
   resolveDataPath,
+  resolveGitRemote,
 }));
 
+import { GitSync } from '../src/git-sync';
 import { PrivateJournalServer } from '../src/server';
 import { runSync, main } from '../src/index';
 
@@ -50,6 +53,9 @@ describe('runSync', () => {
     commitAndPush.mockClear();
     backfill.mockClear();
     resolveDataPath.mockClear();
+    resolveGitRemote.mockReset();
+    resolveGitRemote.mockImplementation((remote?: string) => remote);
+    (GitSync as jest.Mock).mockClear();
   });
 
   it('is a no-op when remote is undefined', async () => {
@@ -64,6 +70,16 @@ describe('runSync', () => {
     expect(commitAndPush).not.toHaveBeenCalled();
     expect(backfill).not.toHaveBeenCalled();
   });
+
+  it('uses the shared resolver result as the GitSync remote', async () => {
+    resolveGitRemote.mockReturnValue('resolved.git');
+
+    await runSync({ dataPath: '/resolved/data/path' });
+
+    expect(resolveGitRemote).toHaveBeenCalledWith(undefined);
+    expect(GitSync).toHaveBeenCalledWith('/resolved/data/path', 'resolved.git');
+    expect(ensureRepo).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('main', () => {
@@ -73,6 +89,9 @@ describe('main', () => {
     commitAndPush.mockClear();
     backfill.mockClear();
     resolveDataPath.mockClear();
+    resolveGitRemote.mockReset();
+    resolveGitRemote.mockImplementation((remote?: string) => remote);
+    (GitSync as jest.Mock).mockClear();
     (PrivateJournalServer as jest.Mock).mockClear();
   });
 

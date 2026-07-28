@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { EmbeddingService } from './embeddings';
 import { GitSync } from './git-sync';
 import { JournalManager } from './journal';
-import { resolveDataPath } from './paths';
+import { resolveDataPath, resolveGitRemote } from './paths';
 import { SearchService } from './search';
 import {
   JournalSection,
@@ -102,7 +102,7 @@ export class PrivateJournalServer {
     const embeddings = EmbeddingService.getInstance();
     this.journal = new JournalManager(this.dataPath, embeddings);
     this.search = new SearchService(this.dataPath, embeddings);
-    this.git = new GitSync(this.dataPath, opts.remote ?? process.env.PRIVATE_JOURNAL_GIT_REMOTE);
+    this.git = new GitSync(this.dataPath, resolveGitRemote(opts.remote));
   }
 
   async handleWrite(args: WriteJournalArgs): Promise<{ path: string }> {
