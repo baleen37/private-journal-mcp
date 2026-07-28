@@ -321,6 +321,17 @@ export class GitSync {
     return applyExists || mergeExists;
   }
 
+  private async abortIfIndexUnmerged(): Promise<void> {
+    try {
+      const { stdout } = await this.git(['diff', '--name-only', '--diff-filter=U']);
+      if (!stdout.trim()) return;
+      console.error('[private-journal] index still has unmerged paths; resetting to avoid committing conflict markers');
+      await this.git(['reset', '--mixed', 'HEAD']);
+    } catch (err) {
+      logGitFailure('[private-journal] unmerged index check failed (best-effort):', err);
+    }
+  }
+
   private async recoverFromInterruptedRebase(): Promise<void> {
     if (!(await this.hasRebaseInProgress())) return;
     console.error('[private-journal] found interrupted rebase, recovering');
@@ -344,6 +355,10 @@ export class GitSync {
       try {
         await fs.rm(path.join(gitDir, 'rebase-merge'), { recursive: true, force: true });
         await fs.rm(path.join(gitDir, 'rebase-apply'), { recursive: true, force: true });
+        // 디렉터리를 지워도 인덱스의 unmerged 항목은 남는다. 그대로 두면
+        // 다음 `add -A`가 conflict marker를 그대로 스테이징해서 저널 파일을
+        // 손상시킨다. 인덱스를 HEAD로 되돌려 오염을 제거한다.
+        await this.git(['reset', '--mixed', 'HEAD']);
         console.error('[private-journal] force-cleaned unreadable rebase state');
       } catch (cleanupErr) {
         logGitFailure('[private-journal] cleanup of rebase directories failed (best-effort):', cleanupErr);
@@ -355,7 +370,12 @@ export class GitSync {
     if (!this.enabled) return;
     try {
       await this.ensureRepo();
+      const hadRebaseInProgress = await this.hasRebaseInProgress();
       await this.recoverFromInterruptedRebase();
+      // 재시작 후 인덱스에 unmerged 항목이 남을 수 있다. 마커가 커밋되는 것을 방지한다.
+      if (hadRebaseInProgress) {
+        await this.abortIfIndexUnmerged();
+      }
       await this.git(['add', '-A']);
       try {
       await this.git(['commit', '-m', message]);

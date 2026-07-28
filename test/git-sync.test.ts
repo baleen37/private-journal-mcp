@@ -468,5 +468,47 @@ describe('GitSync rebase recovery', () => {
     const finalMd = await fs.readFile(path.join(local, 'entry.md'), 'utf8');
     expect(finalMd).toContain('timestamp: 600');
     expect(finalMd).toContain('peer newer');
+    expect(finalMd).not.toContain('<<<<<<<');
+  }, 30000);
+});
+
+describe('GitSync unmerged index protection', () => {
+  it('prevents conflict markers from being committed after forced rebase cleanup', async () => {
+    const { base, remote, branch } = await createSeedRemote('gs-marker-');
+    const dir = path.join(base, 'local');
+    await run('git', ['clone', remote, dir]);
+    await configureGitIdentity(dir);
+
+    // 충돌을 만든다
+    const entryPath = path.join(dir, 'entry.md');
+    await fs.writeFile(entryPath, md(300, 'local version'), 'utf8');
+    await run('git', ['commit', '-am', 'local change'], { cwd: dir });
+
+    // remote에 충돌하는 변경
+    const seed = path.join(base, 'seed');
+    await fs.writeFile(path.join(seed, 'entry.md'), md(400, 'remote version'), 'utf8');
+    await run('git', ['commit', '-am', 'remote change'], { cwd: seed });
+    await run('git', ['push', 'origin', branch], { cwd: seed });
+
+    // rebase가 충돌로 중단
+    const gs = new GitSync(dir, remote);
+    await (gs as any).runNet(['fetch', 'origin', branch]);
+    try {
+      await (gs as any).git(['rebase', '--autostash', `origin/${branch}`]);
+    } catch (e) {
+      // expected
+    }
+
+    // commitAndPush가 unmerged를 정리해야 한다
+    await fs.writeFile(path.join(dir, 'newfile.md'), md(500, 'new'), 'utf8');
+    await gs.commitAndPush('with marker protection');
+
+    // commit 성공
+    const { stdout } = await run('git', ['log', '--oneline'], { cwd: dir });
+    expect(stdout).toContain('with marker protection');
+
+    // 파일에 marker가 없다
+    const finalMd = await fs.readFile(entryPath, 'utf8');
+    expect(finalMd).not.toContain('<<<<<<<');
   }, 30000);
 });
