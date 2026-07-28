@@ -91,7 +91,9 @@ repo가 rebase 진행 중 상태로 남고, 이후 모든 `commit`이 실패해�
 - **이미 잡혀 있으면 기다리지 않고 조용히 skip.** 커밋되지 않은 항목은 다음
   sync의 `git add -A`가 쓸어담으므로 유실이 없다
 - 획득 시각이 2분을 넘긴 stale 록은 탈취 (프로세스가 죽어 남은 경우)
-- 록 파일은 `.gitignore`에 추가
+- 록 파일은 데이터 repo의 `.git/info/exclude`로 제외한다. `.gitignore`가 아닌
+  이유는 그 파일이 커밋되어 원격으로 퍼지고 다른 기기의 사용자 설정을 덮기
+  때문이다. `info/exclude`는 로컬에만 남는다
 
 ### 5. 기기 간 동시성: push 재시도 확대 (`src/git-sync.ts`)
 
@@ -160,6 +162,7 @@ export PRIVATE_JOURNAL_GIT_REMOTE=git@github.com:baleen37/private-journal-vault.
 |---|---|
 | `src/server.ts` | `handleWrite`의 `void` → `await` |
 | `src/git-sync.ts` | 네트워크 타임아웃, rebase 복구, `withLock()`, 재시도 5회+백오프, `.gitattributes` 생성 |
-| `.gitignore` | 록 파일 추가 |
+| `.gitignore` | 록 파일 추가 (이 프로젝트 repo용) |
+| 데이터 repo | `ensureRepo`가 `.gitattributes` 생성 + `.git/info/exclude`에 록 추가 |
 | `README.md` | repo 생성/설정 문서화, 동기화 시점 명확화 |
 | `test/git-sync.test.ts` | 위 시나리오 |
