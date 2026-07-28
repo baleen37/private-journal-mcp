@@ -37,6 +37,7 @@ interface ListArgs {
 }
 
 const DEFAULT_SECTION: JournalSection = 'observations';
+const SYNC_DEADLINE_MS = 15000;
 
 function formatTimestamp(timestamp: number): string {
   const date = new Date(timestamp);
@@ -113,9 +114,20 @@ export class PrivateJournalServer {
     }
 
     const entryPath = await this.journal.write(sections);
-    void this.git.commitAndPush(`journal: ${new Date().toISOString()}`).catch((error: unknown) => {
+
+    const sync = this.git.commitAndPush(`journal: ${new Date().toISOString()}`).catch((error: unknown) => {
       console.error('[private-journal] commitAndPush failed (best-effort):', error);
     });
+
+    let timer: NodeJS.Timeout | undefined;
+    const deadline = new Promise<void>((resolve) => {
+      timer = setTimeout(() => {
+        console.error('[private-journal] sync exceeded 15s; continuing in background');
+        resolve();
+      }, SYNC_DEADLINE_MS);
+    });
+    await Promise.race([sync, deadline]);
+    clearTimeout(timer);
 
     return { path: entryPath };
   }
