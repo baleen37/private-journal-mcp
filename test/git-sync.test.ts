@@ -403,14 +403,14 @@ describe('GitSync network timeout', () => {
 });
 
 describe('GitSync rebase recovery', () => {
-  it('recovers when entering with an interrupted rebase and still commits', async () => {
-    const { base, remote } = await createSeedRemote('gs-recover-');
+  it('force-cleans unreadable rebase state and still commits', async () => {
+    const { base, remote } = await createSeedRemote('gs-recover-unreadable-');
     const dir = path.join(base, 'local');
     const gs = new GitSync(dir, remote);
     await gs.ensureRepo();
     await configureGitIdentity(dir);
 
-    // rebase 진행 중 상태를 인위적으로 만든다
+    // rebase 진행 중 상태를 인위적으로 만든다 (불완전한 상태 — head-name 없음)
     await fs.mkdir(path.join(dir, '.git', 'rebase-merge'), { recursive: true });
 
     // 새 항목을 쓰고 sync
@@ -422,5 +422,51 @@ describe('GitSync rebase recovery', () => {
     // 항목이 실제로 커밋되었다
     const { stdout } = await run('git', ['log', '--oneline'], { cwd: dir });
     expect(stdout).toContain('after interruption');
+  }, 30000);
+
+  it('resolves actual rebase conflicts during recovery and preserves newer version', async () => {
+    const { base, remote, branch } = await createSeedRemote('gs-recover-conflict-');
+    const local = path.join(base, 'local');
+    const peer = path.join(base, 'peer');
+    await run('git', ['clone', remote, local]);
+    await run('git', ['clone', remote, peer]);
+    await configureGitIdentity(local);
+    await configureGitIdentity(peer);
+
+    // peer가 먼저 push
+    await fs.writeFile(path.join(peer, 'entry.md'), md(600, 'peer newer'), 'utf8');
+    await run('git', ['commit', '-am', 'peer push'], { cwd: peer });
+    await run('git', ['push', 'origin', branch], { cwd: peer });
+
+    // local이 다르게 커밋 (충돌 발생할 상태)
+    await fs.writeFile(path.join(local, 'entry.md'), md(500, 'local older'), 'utf8');
+    await run('git', ['commit', '-am', 'local commit'], { cwd: local });
+
+    // pull이 자동으로 진행되지 않은 상태로 commitAndPush 호출
+    // (rebase가 중단된 상태로 들어온다는 시뮬레이션)
+    const gs = new GitSync(local, remote);
+
+    // fetch를 미리 해서 rebase가 충돌하게 만들고
+    await (gs as any).runNet(['fetch', 'origin', branch]);
+    // 실제 rebase 시작 — 충돌로 중단된다
+    try {
+      await (gs as any).git(['rebase', '--autostash', `origin/${branch}`]);
+    } catch (e) {
+      // 충돌로 실패하는 것이 정상
+    }
+
+    // 이제 rebase-merge가 있는 상태에서 commitAndPush
+    await fs.writeFile(path.join(local, 'newfile.md'), md(700, 'new entry'), 'utf8');
+    await gs.commitAndPush('recover from conflict');
+
+    // rebase 상태가 정리되었다
+    await expect(fs.access(path.join(local, '.git', 'rebase-merge'))).rejects.toBeDefined();
+    // 새 파일이 커밋되었다
+    const { stdout } = await run('git', ['log', '--oneline'], { cwd: local });
+    expect(stdout).toContain('recover from conflict');
+    // entry.md는 peer의 버전(더 최신 timestamp)으로 해결되었다
+    const finalMd = await fs.readFile(path.join(local, 'entry.md'), 'utf8');
+    expect(finalMd).toContain('timestamp: 600');
+    expect(finalMd).toContain('peer newer');
   }, 30000);
 });

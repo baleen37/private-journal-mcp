@@ -331,11 +331,20 @@ export class GitSync {
       console.error('[private-journal] aborted unrecoverable rebase (local commits preserved)');
     } catch (err) {
       logGitFailure('[private-journal] git rebase abort failed (best-effort):', err);
-      // force clean up rebase directories as last resort
+      // abort가 실패하는 경우는 두 가지다. rebase 상태 자체가 불완전해서
+      // git이 읽지 못하는 경우와, 온전한 상태인데 다른 이유로 실패한 경우.
+      // 전자만 강제 정리한다 — 온전한 상태를 지우면 git이 복구할 수 있었던
+      // 작업 트리를 파괴한다.
       const gitDir = path.join(this.dataPath, '.git');
+      const salvageable = await this.pathExists(path.join(gitDir, 'rebase-merge', 'head-name'));
+      if (salvageable) {
+        console.error('[private-journal] rebase state looks intact; leaving it for manual recovery');
+        return;
+      }
       try {
         await fs.rm(path.join(gitDir, 'rebase-merge'), { recursive: true, force: true });
         await fs.rm(path.join(gitDir, 'rebase-apply'), { recursive: true, force: true });
+        console.error('[private-journal] force-cleaned unreadable rebase state');
       } catch (cleanupErr) {
         logGitFailure('[private-journal] cleanup of rebase directories failed (best-effort):', cleanupErr);
       }
