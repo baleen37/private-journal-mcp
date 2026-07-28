@@ -196,16 +196,22 @@ rebase가 중간에 끊기면 repo가 진행 중 상태로 남고, 이후 모든
 
 - [ ] **Step 1: 실패하는 테스트 작성**
 
+**주의 — 빈 `.git/rebase-merge`는 실제 실패 조건이 아니다.** 실측 확인: 빈 디렉터리만 있으면 git은 커밋을 정상 수락한다(exit 0). 진짜 중단된 rebase는 인덱스에 unmerged 항목이 있어서 `error: Committing is not possible because you have unmerged files`로 커밋이 거부된다.
+
+따라서 테스트가 **두 개** 필요하다.
+
+**(a) 읽을 수 없는 rebase 상태 정리** — 아래 fabricated 버전. 이것이 증명하는 것은 강제 정리 경로이며, 테스트 이름도 그렇게 지어야 한다.
+
 ```typescript
 describe('GitSync rebase recovery', () => {
-  it('recovers when entering with an interrupted rebase and still commits', async () => {
+  it('force-cleans unreadable rebase state and still commits', async () => {
     const { base, remote } = await createSeedRemote('gs-recover-');
     const dir = path.join(base, 'local');
     const gs = new GitSync(dir, remote);
     await gs.ensureRepo();
     await configureGitIdentity(dir);
 
-    // rebase 진행 중 상태를 인위적으로 만든다
+    // head-name이 없는 불완전한 상태 — git이 읽지 못하므로 강제 정리 대상이다
     await fs.mkdir(path.join(dir, '.git', 'rebase-merge'), { recursive: true });
 
     // 새 항목을 쓰고 sync
@@ -220,6 +226,17 @@ describe('GitSync rebase recovery', () => {
   }, 30000);
 });
 ```
+
+**(b) 진짜 충돌로 중단된 rebase** — 브리프가 의도한 주 경로(`resolveRebaseConflicts()`)를 실제로 타는 테스트. `test/git-sync.test.ts:191` 부근의 기존 `GitSync rebase conflict integration` 테스트가 실제 충돌을 만드는 패턴을 쓰고 있으니 그것을 따른다.
+
+구성:
+
+1. seed remote를 만들고 로컬 클론에서 같은 파일명을 서로 다른 `timestamp`로 커밋해 충돌을 만든다
+2. `git rebase`가 실제로 충돌로 멈추게 둔다 — `.git/rebase-merge/head-name`이 존재하는 온전한 중단 상태
+3. 이 상태에서 `commitAndPush`를 호출한다
+4. 검증: rebase 상태가 정리되고, 커밋이 실제로 되고, **`timestamp`가 큰 쪽이 살아남는다**
+
+4번의 마지막 항목이 핵심이다. 강제 정리 경로가 아니라 충돌 해결 경로를 탔음을 증명하는 유일한 신호다.
 
 - [ ] **Step 2: 테스트 실패 확인**
 
@@ -241,6 +258,23 @@ Expected: FAIL — rebase-merge 디렉터리가 남아 있거나 커밋이 안 �
       console.error('[private-journal] aborted unrecoverable rebase (local commits preserved)');
     } catch (err) {
       logGitFailure('[private-journal] git rebase abort failed (best-effort):', err);
+      // abort가 실패하는 경우는 두 가지다. rebase 상태 자체가 불완전해서 git이
+      // 읽지 못하는 경우와, 온전한 상태인데 다른 이유(권한, 디스크)로 실패한
+      // 경우. 전자만 강제 정리한다 — 온전한 상태를 지우면 git이 복구할 수
+      // 있었던 작업 트리를 파괴한다. 이 경로가 없으면 읽을 수 없는 rebase
+      // 상태에서 이후 모든 커밋이 영구히 실패한다.
+      const gitDir = path.join(this.dataPath, '.git');
+      if (await this.pathExists(path.join(gitDir, 'rebase-merge', 'head-name'))) {
+        console.error('[private-journal] rebase state looks intact; leaving it for manual recovery');
+        return;
+      }
+      try {
+        await fs.rm(path.join(gitDir, 'rebase-merge'), { recursive: true, force: true });
+        await fs.rm(path.join(gitDir, 'rebase-apply'), { recursive: true, force: true });
+        console.error('[private-journal] force-cleaned unreadable rebase state');
+      } catch (cleanupErr) {
+        logGitFailure('[private-journal] cleanup of rebase directories failed (best-effort):', cleanupErr);
+      }
     }
   }
 ```
