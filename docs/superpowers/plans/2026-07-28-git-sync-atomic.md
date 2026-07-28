@@ -283,7 +283,31 @@ Expected: FAIL — rebase-merge 디렉터리가 남아 있거나 커밋이 안 �
 
 ```typescript
       await this.recoverFromInterruptedRebase();
+      await this.abortIfIndexUnmerged();
 ```
+
+**데이터 손상 방어 (실측으로 확인된 필수 항목).** `git add -A`는 unmerged 경로를 내용 검증 없이 "해결됨"으로 스테이징한다. 인덱스에 충돌이 남아 있으면 conflict marker(`<<<<<<<`, `=======`, `>>>>>>>`)가 그대로 저널 파일에 박힌 채 커밋된다. 사용자 글이 깨진다.
+
+이 경로는 강제 정리를 통해서도 도달한다. `rebase-merge` 디렉터리를 지워도 **인덱스의 unmerged 항목은 남으므로**, `hasRebaseInProgress()`가 false가 된 뒤 `add -A`가 마커를 커밋한다. 그래서 강제 정리 블록에 `git reset --mixed HEAD`를 넣고(작업 트리 내용은 보존), 추가로 커밋 직전 방어선을 둔다:
+
+```typescript
+  // add -A는 unmerged 경로를 내용 검증 없이 스테이징한다. 인덱스에 충돌이
+  // 남아 있으면 conflict marker가 그대로 커밋되어 저널 파일이 손상된다.
+  private async abortIfIndexUnmerged(): Promise<void> {
+    try {
+      const { stdout } = await this.git(['diff', '--name-only', '--diff-filter=U']);
+      if (!stdout.trim()) return;
+      console.error('[private-journal] index still has unmerged paths; resetting to avoid committing conflict markers');
+      await this.git(['reset', '--mixed', 'HEAD']);
+    } catch (err) {
+      logGitFailure('[private-journal] unmerged index check failed (best-effort):', err);
+    }
+  }
+```
+
+`abortIfIndexUnmerged`는 **무조건** 호출한다. `hasRebaseInProgress()`로 가드하면 안 된다 — 실측 확인: rebase가 진행 중이고 복구가 실패한 상태에서 가드가 검사를 건너뛰면, 뒤따르는 `add -A` + `commit`이 마커를 그대로 커밋한다. 그 상황이 바로 이 방어선이 필요한 경우다.
+
+테스트는 커밋된 파일에 `<<<<<<<`가 **없음**을 명시적으로 검증해야 한다. `timestamp` 승자만 확인하면 부족하다 — 마커가 박힌 파일에는 양쪽 내용이 다 남아서 승자 문자열도 포함되기 때문이다.
 
 - [ ] **Step 4: 테스트 통과 확인**
 
