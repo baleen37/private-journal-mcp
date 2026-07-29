@@ -68,6 +68,34 @@ it('rejects a missing consecutive migration without changing data', async () => 
   await expect(fs.readFile(versionPath, 'utf8')).resolves.toBe('{"version":1}\n');
 });
 
+it('rejects a non-positive registry from version even when no migration runs', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'migration-'));
+  const migrations: Migration[] = [
+    { from: 0, to: 1, apply: async () => ({ invalidatedMarkdownPaths: [] }) },
+  ];
+
+  await expect(new MigrationManager(dir, migrations).run()).rejects.toThrow(DataVersionError);
+});
+
+it('rejects a non-consecutive registry transition even when no migration runs', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'migration-'));
+  const migrations: Migration[] = [
+    { from: 2, to: 4, apply: async () => ({ invalidatedMarkdownPaths: [] }) },
+  ];
+
+  await expect(new MigrationManager(dir, migrations).run()).rejects.toThrow(DataVersionError);
+});
+
+it('rejects duplicate registry from versions even when no migration runs', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'migration-'));
+  const migrations: Migration[] = [
+    { from: 2, to: 3, apply: async () => ({ invalidatedMarkdownPaths: [] }) },
+    { from: 2, to: 3, apply: async () => ({ invalidatedMarkdownPaths: [] }) },
+  ];
+
+  await expect(new MigrationManager(dir, migrations).run()).rejects.toThrow(DataVersionError);
+});
+
 it('preserves the original data when a migration fails in its stage', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'migration-'));
   const entryPath = path.join(dir, 'entry.md');
@@ -84,6 +112,29 @@ it('preserves the original data when a migration fails in its stage', async () =
   };
 
   await expect(new MigrationManager(dir, [failingMigration], 2).run()).rejects.toThrow('conversion failed');
+  await expect(fs.readFile(entryPath, 'utf8')).resolves.toBe('# original\n');
+  await expect(fs.readFile(versionPath, 'utf8')).resolves.toBe('{"version":1}\n');
+});
+
+it('restores original data when activation cannot move a staged file', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'migration-'));
+  const entryPath = path.join(dir, 'entry.md');
+  const versionPath = path.join(dir, '.private-journal-version.json');
+  await fs.writeFile(entryPath, '# original\n', 'utf8');
+  await fs.writeFile(versionPath, '{"version":1}\n', 'utf8');
+  await fs.mkdir(path.join(dir, '.git'));
+  const migration: Migration = {
+    from: 1,
+    to: 2,
+    apply: async (stage) => {
+      await fs.writeFile(path.join(stage, 'entry.md'), '# changed\n', 'utf8');
+      await fs.writeFile(path.join(stage, '.git'), 'conflict', 'utf8');
+      return { invalidatedMarkdownPaths: ['entry.md'] };
+    },
+  };
+
+  await expect(new MigrationManager(dir, [migration], 2).run()).rejects.toThrow();
+
   await expect(fs.readFile(entryPath, 'utf8')).resolves.toBe('# original\n');
   await expect(fs.readFile(versionPath, 'utf8')).resolves.toBe('{"version":1}\n');
 });

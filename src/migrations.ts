@@ -65,6 +65,7 @@ export class MigrationManager {
     if (!Number.isInteger(this.currentVersion) || this.currentVersion <= 0) {
       throw new DataVersionError('Current data version must be a positive integer');
     }
+    this.validateRegistry();
 
     const hasVersionFile = await this.hasVersionFile();
     const version = await this.readVersion();
@@ -86,10 +87,31 @@ export class MigrationManager {
         await migration.apply(stagePath);
       }
       await this.writeVersion(stagePath, this.currentVersion);
-      await this.activateStage(stagePath);
     } catch (error) {
       await fs.rm(stagePath, { recursive: true, force: true });
       throw error;
+    }
+
+    await this.activateStage(stagePath);
+  }
+
+  private validateRegistry(): void {
+    const fromVersions = new Set<number>();
+
+    for (const migration of this.migrations) {
+      if (
+        !Number.isInteger(migration.from)
+        || !Number.isInteger(migration.to)
+        || migration.from <= 0
+        || migration.to <= 0
+        || migration.to !== migration.from + 1
+      ) {
+        throw new DataVersionError('Migration registry entries must be consecutive positive integer versions');
+      }
+      if (fromVersions.has(migration.from)) {
+        throw new DataVersionError(`Migration registry has duplicate from version ${migration.from}`);
+      }
+      fromVersions.add(migration.from);
     }
   }
 
@@ -139,20 +161,52 @@ export class MigrationManager {
     const backupPath = await fs.mkdtemp(
       path.join(path.dirname(this.dataPath), `.${path.basename(this.dataPath)}-backup-`),
     );
+    const movedOriginalEntries: string[] = [];
+    const movedStagedEntries: string[] = [];
+    let cleanupPaths = false;
 
     try {
       const existingEntries = await fs.readdir(this.dataPath);
       for (const entry of existingEntries) {
-        if (entry !== '.git') await fs.rename(path.join(this.dataPath, entry), path.join(backupPath, entry));
+        if (entry === '.git') continue;
+        await fs.rename(path.join(this.dataPath, entry), path.join(backupPath, entry));
+        movedOriginalEntries.push(entry);
       }
 
       const stagedEntries = await fs.readdir(stagePath);
       for (const entry of stagedEntries) {
         await fs.rename(path.join(stagePath, entry), path.join(this.dataPath, entry));
+        movedStagedEntries.push(entry);
       }
+      cleanupPaths = true;
+    } catch (error) {
+      try {
+        await this.restoreOriginalData(backupPath, movedOriginalEntries, movedStagedEntries);
+        cleanupPaths = true;
+      } catch (restoreError) {
+        throw new DataVersionError(
+          `Migration activation failed and original data could not be restored; preserve ${backupPath} and ${stagePath}: ${String(restoreError)}`,
+        );
+      }
+      throw error;
     } finally {
-      await fs.rm(stagePath, { recursive: true, force: true });
-      await fs.rm(backupPath, { recursive: true, force: true });
+      if (cleanupPaths) {
+        await fs.rm(stagePath, { recursive: true, force: true });
+        await fs.rm(backupPath, { recursive: true, force: true });
+      }
+    }
+  }
+
+  private async restoreOriginalData(
+    backupPath: string,
+    movedOriginalEntries: string[],
+    movedStagedEntries: string[],
+  ): Promise<void> {
+    for (const entry of movedStagedEntries.reverse()) {
+      await fs.rm(path.join(this.dataPath, entry), { recursive: true, force: true });
+    }
+    for (const entry of movedOriginalEntries.reverse()) {
+      await fs.rename(path.join(backupPath, entry), path.join(this.dataPath, entry));
     }
   }
 
