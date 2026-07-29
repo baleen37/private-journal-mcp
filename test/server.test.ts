@@ -370,6 +370,48 @@ describe('PrivateJournalServer handlers', () => {
       expect(finished).toBe(true);
     });
 
+    it('embeds entries pulled in by the sync', async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-pulled-'));
+      const srv = new PrivateJournalServer({ dataPath: dir, remote: 'file:///nonexistent.git' });
+      const pulled = [path.join(dir, '2026-07-30', 'remote.md')];
+
+      jest.spyOn((srv as unknown as { git: { commitAndPush: () => Promise<string[]> } }).git, 'commitAndPush')
+        .mockResolvedValue(pulled);
+      const backfillPaths = jest
+        .spyOn(SearchService.prototype, 'backfillPaths')
+        .mockResolvedValue(1);
+
+      await srv.handleWrite({ content: 'local note' });
+
+      expect(backfillPaths).toHaveBeenCalledWith(pulled);
+    });
+
+    it('does not touch embeddings when the sync pulled nothing', async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-nopull-'));
+      const srv = new PrivateJournalServer({ dataPath: dir, remote: 'file:///nonexistent.git' });
+
+      jest.spyOn((srv as unknown as { git: { commitAndPush: () => Promise<string[]> } }).git, 'commitAndPush')
+        .mockResolvedValue([]);
+      const backfillPaths = jest.spyOn(SearchService.prototype, 'backfillPaths');
+
+      await srv.handleWrite({ content: 'local note' });
+
+      expect(backfillPaths).not.toHaveBeenCalled();
+    });
+
+    it('still succeeds when a synced-entry embedding fails', async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-embfail-'));
+      const srv = new PrivateJournalServer({ dataPath: dir, remote: 'file:///nonexistent.git' });
+
+      jest.spyOn((srv as unknown as { git: { commitAndPush: () => Promise<string[]> } }).git, 'commitAndPush')
+        .mockResolvedValue([path.join(dir, 'x.md')]);
+      jest.spyOn(SearchService.prototype, 'backfillPaths')
+        .mockRejectedValue(new Error('embedding exploded'));
+
+      const result = await srv.handleWrite({ content: 'still works' });
+      expect(result.path).toContain('.md');
+    });
+
     it('still succeeds when commitAndPush rejects', async () => {
       const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-fail-'));
       const srv = new PrivateJournalServer({ dataPath: dir, remote: 'file:///nonexistent.git' });

@@ -207,7 +207,7 @@ describe('GitSync rebase conflict integration', () => {
     await run('git', ['commit', '-am', 'local update'], { cwd: local });
 
     const gs = new GitSync(local, remote);
-    await expect(gs.pull()).resolves.toBeUndefined();
+    await expect(gs.pull()).resolves.toEqual(expect.any(Array));
 
     const finalMd = await fs.readFile(path.join(local, 'entry.md'), 'utf8');
     expect(finalMd).toContain('timestamp: 300');
@@ -236,7 +236,7 @@ describe('GitSync rebase conflict integration', () => {
     await run('git', ['commit', '-am', 'local tie update'], { cwd: local });
 
     const gs = new GitSync(local, remote);
-    await expect(gs.pull()).resolves.toBeUndefined();
+    await expect(gs.pull()).resolves.toEqual(expect.any(Array));
 
     const finalMd = await fs.readFile(path.join(local, 'entry.md'), 'utf8');
     expect(finalMd).toContain('timestamp: 400');
@@ -267,9 +267,11 @@ describe('GitSync best-effort error handling', () => {
     const ensureRepo = jest.spyOn(gs, 'ensureRepo').mockResolvedValue();
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
 
+    // commitAndPush도 전후 HEAD를 비교하므로 순서 검증을 위해 따로 스텁한다.
+    jest.spyOn(gs as any, 'headSha').mockResolvedValue('same-sha');
     (gs as any).git = git;
 
-    await expect(gs.commitAndPush('journal: test')).resolves.toBeUndefined();
+    await expect(gs.commitAndPush('journal: test')).resolves.toEqual([]);
 
     expect(ensureRepo).toHaveBeenCalled();
     expect(git).toHaveBeenCalledWith(['commit', '-m', 'journal: test']);
@@ -297,7 +299,7 @@ describe('GitSync best-effort error handling', () => {
     (gs as any).runNet = jest.fn().mockResolvedValue({ stdout: '', stderr: '' });
     (gs as any).git = jest.fn().mockRejectedValue(error);
 
-    await expect(gs.pull()).resolves.toBeUndefined();
+    await expect(gs.pull()).resolves.toEqual(expect.any(Array));
 
     expect(resolveSpy).not.toHaveBeenCalled();
     expect(errorSpy).toHaveBeenCalledWith(
@@ -347,10 +349,13 @@ describe('GitSync best-effort error handling', () => {
 
     jest.spyOn(gs as any, 'hasGitDir').mockResolvedValue(true);
     jest.spyOn(gs as any, 'currentBranch').mockResolvedValue('main');
+    // pull()은 전후 HEAD를 비교해 변경 경로를 계산한다. 이 테스트는 mock된 git의
+    // 호출 순서를 검증하므로, HEAD 조회는 따로 스텁해 순서를 건드리지 않는다.
+    jest.spyOn(gs as any, 'headSha').mockResolvedValue('same-sha');
     (gs as any).runNet = jest.fn().mockResolvedValue({ stdout: '', stderr: '' });
     (gs as any).git = git;
 
-    await expect(gs.pull()).resolves.toBeUndefined();
+    await expect(gs.pull()).resolves.toEqual([]);
 
     expect(resolveMdConflict).toHaveBeenCalledWith('entry.md');
     expect(errorSpy).toHaveBeenCalledWith(
@@ -365,6 +370,66 @@ describe('GitSync best-effort error handling', () => {
       '[private-journal] git rebase still unresolved after conflict handling (best-effort)',
     );
   });
+});
+
+describe('GitSync pull change reporting', () => {
+  it('reports only the markdown paths that arrived in the pull', async () => {
+    const { base, remote, branch } = await createSeedRemote('gs-pulled-');
+    const dir = path.join(base, 'local');
+    const gs = new GitSync(dir, remote);
+    await gs.ensureRepo();
+    await configureGitIdentity(dir);
+
+    // 다른 기기가 새 엔트리 두 개를 올린 상황
+    const other = path.join(base, 'other');
+    await run('git', ['clone', remote, other]);
+    await configureGitIdentity(other);
+    await fs.mkdir(path.join(other, '2026-07-30'), { recursive: true });
+    await fs.writeFile(path.join(other, '2026-07-30', 'a.md'), md(200, 'remote a'), 'utf8');
+    await fs.writeFile(path.join(other, '2026-07-30', 'b.md'), md(300, 'remote b'), 'utf8');
+    await run('git', ['add', '-A'], { cwd: other });
+    await run('git', ['commit', '-m', 'two new entries'], { cwd: other });
+    await run('git', ['push', 'origin', branch], { cwd: other });
+
+    const changed = await gs.pull();
+
+    expect(changed.sort()).toEqual([
+      path.join(dir, '2026-07-30', 'a.md'),
+      path.join(dir, '2026-07-30', 'b.md'),
+    ]);
+  }, 30000);
+
+  // 새 기기는 ensureRepo()가 clone하므로 커밋이 있는 상태로 시작한다. 그래도
+  // 커밋이 하나도 없는 repo에서 HEAD가 생기는 경우(예: 첫 로컬 커밋)에는
+  // before가 없으므로, 전체 트리를 새로 받은 것으로 봐야 한다.
+  it('reports the whole tree when HEAD appears where there was no commit', async () => {
+    const { base, remote } = await createSeedRemote('gs-pull-firstsync-');
+    const dir = path.join(base, 'fresh');
+    await fs.mkdir(dir, { recursive: true });
+    await run('git', ['init', dir]);
+    await configureGitIdentity(dir);
+    await run('git', ['remote', 'add', 'origin', remote], { cwd: dir });
+
+    const gs = new GitSync(dir, remote);
+    await fs.mkdir(path.join(dir, '2026-07-30'), { recursive: true });
+    await fs.writeFile(path.join(dir, '2026-07-30', 'first.md'), md(400, 'first'), 'utf8');
+
+    // 커밋이 없던 repo에 첫 커밋이 생기는 경로
+    const changed = await gs.commitAndPush('first commit');
+
+    expect(changed).toContain(path.join(dir, '2026-07-30', 'first.md'));
+  }, 30000);
+
+  it('reports no changes when the pull brought nothing new', async () => {
+    const { base, remote } = await createSeedRemote('gs-pull-noop-');
+    const dir = path.join(base, 'local');
+    const gs = new GitSync(dir, remote);
+    await gs.ensureRepo();
+    await configureGitIdentity(dir);
+
+    const changed = await gs.pull();
+    expect(changed).toEqual([]);
+  }, 30000);
 });
 
 describe('GitSync repo metadata', () => {

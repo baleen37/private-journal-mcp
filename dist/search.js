@@ -179,29 +179,60 @@ class SearchService {
         const files = await this.listEntryFiles();
         let created = 0;
         for (const mdPath of files) {
-            const existing = await this.embeddings.loadEmbedding(mdPath);
-            if (existing)
-                continue;
-            try {
-                const md = await fs.readFile(mdPath, 'utf8');
-                const fm = (0, journal_1.parseFrontmatter)(md);
-                const text = this.embeddings.extractSearchableText(md);
-                const vector = await this.embeddings.generateEmbedding(text, 'passage');
-                const data = {
-                    embedding: vector,
-                    text,
-                    sections: (0, journal_1.parseSections)(md),
-                    timestamp: fm.timestamp,
-                    path: mdPath,
-                };
-                await this.embeddings.saveEmbedding(mdPath, data);
+            if (await this.embedIfMissing(mdPath))
                 created++;
-            }
-            catch (err) {
-                console.error('[private-journal] backfill failed for', mdPath, err);
-            }
         }
         return created;
+    }
+    // pull이 알려준 경로만 임베딩한다. 전체 목록 스캔(1000건 기준 12MB 읽기,
+    // 약 250ms)을 건너뛰므로 동기화 직후 호출이 사실상 무료가 된다.
+    // dataPath 밖 경로는 무시한다 — 원격이 조작된 경로를 보내도 벗어나지 못한다.
+    async backfillPaths(mdPaths) {
+        if (mdPaths.length === 0)
+            return 0;
+        const rootPath = await fs.realpath(this.dataPath).catch(() => this.dataPath);
+        let created = 0;
+        for (const mdPath of mdPaths) {
+            if (!mdPath.endsWith('.md'))
+                continue;
+            let realPath;
+            try {
+                realPath = await fs.realpath(mdPath);
+            }
+            catch {
+                continue;
+            }
+            const relative = path.relative(rootPath, realPath);
+            if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative))
+                continue;
+            if (await this.embedIfMissing(mdPath))
+                created++;
+        }
+        return created;
+    }
+    // 임베딩이 없을 때만 생성한다. 생성했으면 true.
+    async embedIfMissing(mdPath) {
+        if (await this.embeddings.loadEmbedding(mdPath))
+            return false;
+        try {
+            const md = await fs.readFile(mdPath, 'utf8');
+            const fm = (0, journal_1.parseFrontmatter)(md);
+            const text = this.embeddings.extractSearchableText(md);
+            const vector = await this.embeddings.generateEmbedding(text, 'passage');
+            const data = {
+                embedding: vector,
+                text,
+                sections: (0, journal_1.parseSections)(md),
+                timestamp: fm.timestamp,
+                path: mdPath,
+            };
+            await this.embeddings.saveEmbedding(mdPath, data);
+            return true;
+        }
+        catch (err) {
+            console.error('[private-journal] backfill failed for', mdPath, err);
+            return false;
+        }
     }
 }
 exports.SearchService = SearchService;
