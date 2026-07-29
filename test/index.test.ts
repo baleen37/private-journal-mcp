@@ -11,7 +11,7 @@ jest.mock('../src/server', () => {
 
 const ensureRepo = jest.fn().mockResolvedValue(undefined);
 const pull = jest.fn().mockResolvedValue(undefined);
-const commitAndPush = jest.fn().mockResolvedValue(undefined);
+const commitAndPush = jest.fn().mockResolvedValue([]);
 
 jest.mock('../src/git-sync', () => ({
   GitSync: jest.fn().mockImplementation((_dataPath: string, remote?: string) => ({
@@ -23,9 +23,10 @@ jest.mock('../src/git-sync', () => ({
 }));
 
 const backfill = jest.fn().mockResolvedValue(0);
+const backfillPaths = jest.fn().mockResolvedValue(0);
 
 jest.mock('../src/search', () => ({
-  SearchService: jest.fn().mockImplementation(() => ({ backfill })),
+  SearchService: jest.fn().mockImplementation(() => ({ backfill, backfillPaths })),
 }));
 
 jest.mock('../src/embeddings', () => ({
@@ -74,6 +75,7 @@ describe('runSync', () => {
     pull.mockClear();
     commitAndPush.mockClear();
     backfill.mockClear();
+    backfillPaths.mockClear();
     resolveDataPath.mockClear();
     resolveGitRemote.mockReset();
     resolveGitRemote.mockImplementation((remote?: string) => remote);
@@ -91,6 +93,7 @@ describe('runSync', () => {
     expect(pull).not.toHaveBeenCalled();
     expect(commitAndPush).not.toHaveBeenCalled();
     expect(backfill).not.toHaveBeenCalled();
+    expect(backfillPaths).not.toHaveBeenCalled();
   });
 
   it('uses the shared resolver result as the GitSync remote', async () => {
@@ -102,6 +105,29 @@ describe('runSync', () => {
     expect(GitSync).toHaveBeenCalledWith('/resolved/data/path', 'resolved.git');
     expect(ensureRepo).toHaveBeenCalledTimes(1);
   });
+
+  it('embeds only the pulled entries instead of scanning the whole corpus', async () => {
+    resolveGitRemote.mockReturnValue('resolved.git');
+    commitAndPush.mockResolvedValueOnce(['/data/2026-07-30/a.md', '/data/2026-07-30/b.md']);
+
+    await runSync({ dataPath: '/resolved/data/path' });
+
+    expect(backfillPaths).toHaveBeenCalledWith(['/data/2026-07-30/a.md', '/data/2026-07-30/b.md']);
+    expect(backfill).not.toHaveBeenCalled();
+  });
+
+  // 이 CLI는 MCP 서버와 별개 프로세스라, 서버를 안 쓰는 기기에서는 기동
+  // backfill()이 실행되지 않는다. pull이 없을 때 전체 스캔을 아예 건너뛰면
+  // 그런 기기의 미임베딩 엔트리가 영구히 검색되지 않는다.
+  it('falls back to a full scan when the sync pulled nothing', async () => {
+    resolveGitRemote.mockReturnValue('resolved.git');
+    commitAndPush.mockResolvedValueOnce([]);
+
+    await runSync({ dataPath: '/resolved/data/path' });
+
+    expect(backfillPaths).not.toHaveBeenCalled();
+    expect(backfill).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('main', () => {
@@ -110,6 +136,7 @@ describe('main', () => {
     pull.mockClear();
     commitAndPush.mockClear();
     backfill.mockClear();
+    backfillPaths.mockClear();
     resolveDataPath.mockClear();
     resolveGitRemote.mockReset();
     resolveGitRemote.mockImplementation((remote?: string) => remote);

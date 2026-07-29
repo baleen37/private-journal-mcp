@@ -165,6 +165,39 @@ describe('SearchService.backfill', () => {
     expect(n).toBe(1);
   });
 
+  it('embeds only the given paths without scanning the corpus', async () => {
+    const { dir, emb } = await seed();
+    const jm = new JournalManager(dir, emb);
+    const target = await jm.write({ observations: 'pulled entry' }, new Date('2026-07-30T10:00:00Z'));
+    await fs.rm(target.replace(/\.md$/, '.embedding'));
+
+    const svc = new SearchService(dir, emb);
+    const listSpy = jest.spyOn(svc, 'listEntryFiles');
+    jest.spyOn(emb, 'generateEmbedding').mockResolvedValue([0.5, 0.5]);
+
+    const created = await svc.backfillPaths([target]);
+
+    expect(created).toBe(1);
+    // 대상 경로를 이미 알고 있으므로 전체 목록을 훑지 않아야 한다
+    expect(listSpy).not.toHaveBeenCalled();
+    expect(await emb.loadEmbedding(target)).not.toBeNull();
+  });
+
+  it('ignores paths outside dataPath and paths that already have embeddings', async () => {
+    const { dir, emb } = await seed();
+    const jm = new JournalManager(dir, emb);
+    const kept = await jm.write({ observations: 'already embedded' }, new Date('2026-07-30T11:00:00Z'));
+    const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), 'srch-outside-bf-'));
+    const outside = path.join(outsideDir, 'evil.md');
+    await fs.writeFile(outside, '## Reflections\n\nsecret\n', 'utf8');
+
+    const svc = new SearchService(dir, emb);
+    const created = await svc.backfillPaths([kept, outside]);
+
+    expect(created).toBe(0);
+    await expect(fs.access(outside.replace(/\.md$/, '.embedding'))).rejects.toBeDefined();
+  });
+
   it('skips markdown symlinks that resolve outside dataPath while keeping regular markdown files', async () => {
     const { dir, emb } = await seed();
     const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), 'srch-outside-'));

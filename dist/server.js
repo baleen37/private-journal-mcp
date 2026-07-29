@@ -100,7 +100,14 @@ class PrivateJournalServer {
             throw new Error('At least one journal section must have content.');
         }
         const entryPath = await this.journal.write(sections);
-        const sync = this.git.commitAndPush(`journal: ${new Date().toISOString()}`).catch((error) => {
+        // 동기화로 들어온 원격 엔트리는 임베딩이 없어 검색에서 조용히 빠진다
+        // (.embedding은 git 추적 대상이 아니다). 동기화가 건드린 경로만 즉시
+        // 임베딩해서 다음 재시작까지 기다리지 않게 한다. 방금 쓴 로컬 엔트리도
+        // 함께 보고되지만 이미 임베딩이 있어 건너뛴다.
+        const sync = this.git
+            .commitAndPush(`journal: ${new Date().toISOString()}`)
+            .then((synced) => this.embedSynced(synced))
+            .catch((error) => {
             console.error('[private-journal] commitAndPush failed (best-effort):', error);
         });
         let timer;
@@ -113,6 +120,19 @@ class PrivateJournalServer {
         await Promise.race([sync, deadline]);
         clearTimeout(timer);
         return { path: entryPath };
+    }
+    async embedSynced(synced) {
+        if (synced.length === 0)
+            return;
+        try {
+            const created = await this.search.backfillPaths(synced);
+            if (created > 0) {
+                console.error(`[private-journal] embedded ${created} synced entry(ies)`);
+            }
+        }
+        catch (error) {
+            console.error('[private-journal] embedding synced entries failed (best-effort):', error);
+        }
     }
     async handleSearch(args) {
         return this.search.search(args.query, {

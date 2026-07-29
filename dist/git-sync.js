@@ -348,12 +348,55 @@ class GitSync {
         catch { /* ignore */ }
         return 'main';
     }
+    // 동기화로 HEAD가 움직이며 추가/수정된 md의 절대경로를 돌려준다. 호출자가 그
+    // 경로만 임베딩하면 전체 스캔 없이 동기화된 엔트리를 즉시 검색할 수 있다.
+    //
+    // 주의: "원격에서 받은 것"만이 아니다. commitAndPush는 자기 로컬 커밋도
+    // HEAD를 움직이므로 방금 쓴 로컬 엔트리가 함께 보고된다. 임베딩 대상으로는
+    // 무해하다(이미 임베딩이 있어 backfillPaths가 건너뛴다) — 이 반환값을
+    // "원격 유래"로 해석하는 다른 용도에 쓰면 안 된다.
     async pull() {
         if (!this.enabled)
-            return;
+            return [];
         if (!(await this.hasGitDir()))
-            return;
-        await this.withLock(() => this.pullUnlocked());
+            return [];
+        return this.trackingChangedMarkdown(() => this.withLock(() => this.pullUnlocked()));
+    }
+    // 작업 전후 HEAD를 비교해 새로 들어온 md 경로를 돌려준다.
+    async trackingChangedMarkdown(work) {
+        const before = await this.headSha();
+        await work();
+        const after = await this.headSha();
+        if (!after || before === after)
+            return [];
+        return this.changedMarkdownPaths(before, after);
+    }
+    async headSha() {
+        try {
+            const { stdout } = await this.git(['rev-parse', 'HEAD']);
+            return stdout.trim() || undefined;
+        }
+        catch {
+            return undefined;
+        }
+    }
+    // 두 커밋 사이에 추가/수정된 md만 고른다. 삭제(D)는 임베딩할 대상이 없다.
+    // before가 없으면(커밋이 하나도 없던 새 repo) after의 전체 트리가 새로 받은
+    // 것이다 — 빈 diff로 처리하면 첫 동기화 엔트리를 통째로 놓친다.
+    async changedMarkdownPaths(before, after) {
+        try {
+            const { stdout } = before
+                ? await this.git(['diff', '--name-only', '--diff-filter=AM', '-z', `${before}..${after}`])
+                : await this.git(['ls-tree', '-r', '--name-only', '-z', after]);
+            return stdout
+                .split('\0')
+                .filter((rel) => rel.endsWith('.md'))
+                .map((rel) => path.join(this.dataPath, rel));
+        }
+        catch (err) {
+            logGitFailure('[private-journal] pull change scan failed (best-effort):', err);
+            return [];
+        }
     }
     // remote에 브랜치가 하나도 없으면 아직 아무것도 push하지 않은 새 repo다.
     // 확인 자체가 실패하면 침묵하지 않는다(false) — 판단이 안 될 때는 로그를 남긴다.
@@ -553,10 +596,12 @@ class GitSync {
             }
         }
     }
+    // pull()과 동일하게, 동기화로 추가/수정된 md 경로를 돌려준다(로컬 커밋분
+    // 포함). 동기화가 스킵되거나(록 경합) HEAD가 그대로면 빈 배열이다.
     async commitAndPush(message) {
         if (!this.enabled)
-            return;
-        await this.withLock(() => this.commitAndPushUnlocked(message));
+            return [];
+        return this.trackingChangedMarkdown(() => this.withLock(() => this.commitAndPushUnlocked(message)));
     }
     async commitAndPushUnlocked(message) {
         try {
