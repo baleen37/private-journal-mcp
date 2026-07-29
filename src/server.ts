@@ -7,7 +7,7 @@ import { EmbeddingService } from './embeddings';
 import { GitSync } from './git-sync';
 import { JournalManager } from './journal';
 import { resolveDataPath, resolveGitRemote } from './paths';
-import { SearchService } from './search';
+import { SearchService, MAX_SEARCH_LIMIT } from './search';
 import {
   JournalSection,
   JournalSections,
@@ -20,6 +20,7 @@ interface SearchArgs {
   query: string;
   limit?: number;
   section?: JournalSection;
+  minScore?: number;
 }
 
 interface WriteJournalArgs {
@@ -38,6 +39,10 @@ interface ListArgs {
 
 const DEFAULT_SECTION: JournalSection = 'observations';
 const SYNC_DEADLINE_MS = 15000;
+
+// 잘못된 limit이 응답을 폭발시키지 않도록 스키마에서 막는다. 음수는 slice로
+// 코퍼스 전체가 새고, 과대값은 컨텍스트를 넘긴다.
+const boundedLimit = z.number().int().positive().max(MAX_SEARCH_LIMIT).optional();
 
 function formatTimestamp(timestamp: number): string {
   const date = new Date(timestamp);
@@ -136,6 +141,7 @@ export class PrivateJournalServer {
     return this.search.search(args.query, {
       limit: args.limit,
       sections: args.section ? [args.section] : undefined,
+      minScore: args.minScore,
     });
   }
 
@@ -191,7 +197,15 @@ export class PrivateJournalServer {
       {
         description: [
           'Write a durable private journal entry. section defaults to observations.',
-          'Use project_notes for repo state, technical_insights for reusable fixes, and user_context for stable preferences.',
+          [
+            'Pick the section by what the note is about:',
+            '- project_notes: current repo/task state, decisions, and where work stands.',
+            '- technical_insights: reusable fixes, root causes, and gotchas worth recalling later.',
+            '- user_context: stable preferences and working style of the person you assist.',
+            '- observations: raw findings from this session that are not yet generalized.',
+            '- reflections: retrospectives on how the work went and what to change next time.',
+            '- world_knowledge: durable facts about systems or the world outside this repo.',
+          ].join('\n'),
           'Returns a JSON object with the written file path.',
         ].join('\n\n'),
         inputSchema: {
@@ -208,11 +222,13 @@ export class PrivateJournalServer {
         description: [
           'Search private journal entries semantically and return LLM-readable markdown snippets with source paths, sections, scores, and excerpts.',
           'Use section to narrow recall when the intent is known; omit section for broad discovery.',
+          'Scores are cosine similarities from a multilingual-e5 model and cluster in a narrow band (~0.80-0.89), so a high score alone does not mean an entry is relevant. Always judge relevance from the excerpt text, and treat small score gaps as noise. minScore is available but has no reliable universal cutoff.',
         ].join('\n\n'),
         inputSchema: {
           query: z.string(),
-          limit: z.number().optional(),
+          limit: boundedLimit,
           section: z.enum(JOURNAL_SECTIONS).optional(),
+          minScore: z.number().min(0).max(1).optional(),
         },
       },
       async (args) => {
@@ -235,8 +251,8 @@ export class PrivateJournalServer {
       {
         description: 'List recent journal entries with paths, dates, and sections for chronological review before reading full entries.',
         inputSchema: {
-          limit: z.number().optional(),
-          days: z.number().optional(),
+          limit: boundedLimit,
+          days: z.number().int().positive().max(3650).optional(),
         },
       },
       async (args) => toText(await this.handleList(args as ListArgs)),
