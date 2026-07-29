@@ -220,6 +220,36 @@ describe('PrivateJournalServer handlers', () => {
     expect(searchSection.safeParse('not_a_section').success).toBe(false);
   });
 
+  it('rejects non-positive and oversized limits at the schema boundary', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-'));
+    const srv = new PrivateJournalServer({ dataPath: dir });
+
+    const tools = await collectRegisteredTools(srv);
+    const byName = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
+    const searchLimit = byName.search_journal.config.inputSchema?.limit;
+    const listLimit = byName.list_journal.config.inputSchema?.limit;
+
+    for (const schema of [searchLimit, listLimit]) {
+      expect(schema.safeParse(-5).success).toBe(false);
+      expect(schema.safeParse(0).success).toBe(false);
+      expect(schema.safeParse(1.5).success).toBe(false);
+      expect(schema.safeParse(99999).success).toBe(false);
+      expect(schema.safeParse(10).success).toBe(true);
+    }
+  });
+
+  it('documents every journal section in the write_journal description', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-'));
+    const srv = new PrivateJournalServer({ dataPath: dir });
+
+    const tools = await collectRegisteredTools(srv);
+    const description = tools.find((t) => t.name === 'write_journal')!.config.description!;
+
+    for (const section of JOURNAL_SECTIONS) {
+      expect(description).toContain(section);
+    }
+  });
+
   it('keeps write_journal MCP results as the existing JSON path shape', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-'));
     const srv = new PrivateJournalServer({ dataPath: dir });

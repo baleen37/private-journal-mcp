@@ -390,6 +390,49 @@ describe('GitSync repo metadata', () => {
     expect(stdout).not.toContain('.private-journal-sync.lock');
   }, 30000);
 
+  it('excludes derived .embedding files from the data repo', async () => {
+    const { base, remote } = await createSeedRemote('gs-emb-exclude-');
+    const dir = path.join(base, 'local');
+    const gs = new GitSync(dir, remote);
+    await gs.ensureRepo();
+    await configureGitIdentity(dir);
+
+    await fs.mkdir(path.join(dir, '2026-07-29'), { recursive: true });
+    await fs.writeFile(path.join(dir, '2026-07-29', 'e.md'), '# note\n', 'utf8');
+    await fs.writeFile(path.join(dir, '2026-07-29', 'e.embedding'), '{"embedding":[0.1]}', 'utf8');
+
+    const { stdout } = await run(
+      'git',
+      ['status', '--porcelain', '--untracked-files=all'],
+      { cwd: dir },
+    );
+    expect(stdout).toContain('2026-07-29/e.md');
+    expect(stdout).not.toContain('.embedding');
+  }, 30000);
+
+  it('untracks previously committed .embedding files but keeps them on disk', async () => {
+    const { base, remote } = await createSeedRemote('gs-emb-prune-');
+    const dir = path.join(base, 'local');
+    const gs = new GitSync(dir, remote);
+    await gs.ensureRepo();
+    await configureGitIdentity(dir);
+
+    // 과거 버전이 커밋해 둔 임베딩을 재현한다
+    const embPath = path.join(dir, 'legacy.embedding');
+    await fs.writeFile(path.join(dir, 'legacy.md'), '# legacy\n', 'utf8');
+    await fs.writeFile(embPath, '{"embedding":[0.2]}', 'utf8');
+    await run('git', ['add', '-f', 'legacy.md', 'legacy.embedding'], { cwd: dir });
+    await run('git', ['commit', '-m', 'legacy with embedding'], { cwd: dir });
+
+    await gs.ensureRepo();
+
+    const { stdout: tracked } = await run('git', ['ls-files'], { cwd: dir });
+    expect(tracked).toContain('legacy.md');
+    expect(tracked).not.toContain('legacy.embedding');
+    // 로컬 파일은 남아 있어야 검색이 재백필 없이 계속 동작한다
+    await expect(fs.access(embPath)).resolves.toBeUndefined();
+  }, 30000);
+
   it('does not overwrite an existing .gitattributes', async () => {
     const { base, remote } = await createSeedRemote('gs-attrs-keep-');
     const dir = path.join(base, 'local');

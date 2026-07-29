@@ -1,4 +1,4 @@
-import { SearchService } from '../src/search';
+import { SearchService, MAX_SEARCH_LIMIT } from '../src/search';
 import { JournalManager } from '../src/journal';
 import { EmbeddingService } from '../src/embeddings';
 import * as fs from 'fs/promises';
@@ -39,12 +39,109 @@ describe('SearchService.search', () => {
   });
 });
 
+describe('SearchService.search limit clamping', () => {
+  it('does not leak the whole corpus for negative limits', async () => {
+    const { dir, emb } = await seed();
+    jest.spyOn(emb, 'generateEmbedding').mockResolvedValue([1, 0]);
+    const svc = new SearchService(dir, emb);
+    // slice(0, -1)은 "마지막 하나만 뺀 전부"였다. 이제 기본 limit으로 떨어진다.
+    const results = await svc.search('고양이', { limit: -1 });
+    expect(results.length).toBeLessThanOrEqual(MAX_SEARCH_LIMIT);
+    expect(results.length).toBeGreaterThan(0);
+  });
+
+  it('falls back to the default limit when limit is zero', async () => {
+    const { dir, emb } = await seed();
+    jest.spyOn(emb, 'generateEmbedding').mockResolvedValue([1, 0]);
+    const svc = new SearchService(dir, emb);
+    const results = await svc.search('고양이', { limit: 0 });
+    expect(results.length).toBeGreaterThan(0);
+  });
+
+  it('caps oversized limits to MAX_SEARCH_LIMIT', async () => {
+    const { dir, emb } = await seed();
+    jest.spyOn(emb, 'generateEmbedding').mockResolvedValue([1, 0]);
+    const svc = new SearchService(dir, emb);
+    const results = await svc.search('고양이', { limit: 99999 });
+    expect(results.length).toBeLessThanOrEqual(MAX_SEARCH_LIMIT);
+  });
+});
+
+describe('SearchService.search minScore', () => {
+  it('drops results below the score floor', async () => {
+    const { dir, emb } = await seed();
+    // query orthogonal to the "dog" entry -> cosine 0 for it, 1 for "cat"
+    jest.spyOn(emb, 'generateEmbedding').mockResolvedValue([1, 0]);
+    const svc = new SearchService(dir, emb);
+    const results = await svc.search('고양이', { limit: 10, minScore: 0.5 });
+    expect(results.length).toBeGreaterThan(0);
+    expect(results.every((r) => r.score >= 0.5)).toBe(true);
+  });
+
+  it('returns an empty list when nothing clears the floor', async () => {
+    const { dir, emb } = await seed();
+    jest.spyOn(emb, 'generateEmbedding').mockResolvedValue([1, 0]);
+    const svc = new SearchService(dir, emb);
+    const results = await svc.search('고양이', { limit: 10, minScore: 1.5 });
+    expect(results).toHaveLength(0);
+  });
+});
+
 describe('SearchService.listRecent', () => {
   it('returns entries newest-first', async () => {
     const { dir, emb } = await seed();
     const svc = new SearchService(dir, emb);
     const recent = await svc.listRecent({ limit: 10, days: 3650 });
     expect(recent[0].timestamp).toBeGreaterThan(recent[1].timestamp);
+  });
+
+  it('reads only the entries it returns instead of the whole corpus', async () => {
+    const { dir, emb } = await seed();
+    const jm = new JournalManager(dir, emb);
+    for (let day = 1; day <= 8; day++) {
+      await jm.write(
+        { observations: `entry ${day}` },
+        new Date(`2026-06-0${day}T10:00:00Z`),
+      );
+    }
+    const svc = new SearchService(dir, emb);
+
+    const recent = await svc.listRecent({ limit: 2, days: 3650 });
+    expect(recent).toHaveLength(2);
+    // 최신 2건은 seed()가 만든 2026-06-20 / 06-24 엔트리여야 한다
+    expect(recent[0].path).toContain('2026-06-24');
+    expect(recent[1].path).toContain('2026-06-20');
+  });
+
+  it('returns the newest entries by path order without scanning every file', async () => {
+    const { dir, emb } = await seed();
+    const jm = new JournalManager(dir, emb);
+    for (let day = 1; day <= 8; day++) {
+      await jm.write(
+        { observations: `entry ${day}` },
+        new Date(`2026-06-0${day}T10:00:00Z`),
+      );
+    }
+    const svc = new SearchService(dir, emb);
+    const all = await svc.listRecent({ limit: 50, days: 3650 });
+    expect(all).toHaveLength(10);
+
+    const topTwo = await svc.listRecent({ limit: 2, days: 3650 });
+    expect(topTwo.map((e) => e.path)).toEqual(all.slice(0, 2).map((e) => e.path));
+  });
+
+  it('skips entries outside the days window without reading them', async () => {
+    const { dir, emb } = await seed();
+    const jm = new JournalManager(dir, emb);
+    const old = new Date(Date.now() - 400 * 24 * 60 * 60 * 1000);
+    await jm.write({ observations: 'ancient' }, old);
+    await jm.write({ observations: 'fresh' }, new Date());
+
+    const svc = new SearchService(dir, emb);
+    const recent = await svc.listRecent({ limit: 10, days: 7 });
+
+    expect(recent.every((e) => e.timestamp >= Date.now() - 8 * 24 * 60 * 60 * 1000)).toBe(true);
+    expect(recent.some((e) => e.title.length > 0)).toBe(true);
   });
 });
 

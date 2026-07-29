@@ -33,10 +33,25 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.SearchService = void 0;
+exports.SearchService = exports.MAX_SEARCH_LIMIT = void 0;
 const fs = __importStar(require("fs/promises"));
 const path = __importStar(require("path"));
 const journal_1 = require("./journal");
+exports.MAX_SEARCH_LIMIT = 50;
+const DEFAULT_LIMIT = 10;
+// 음수/0/과대 limit이 slice로 새는 것을 막는다. slice(0, -1)은 "마지막 하나만
+// 제외한 전부"라서, 검증 없이 넘기면 코퍼스 전체가 응답으로 나간다.
+function clampLimit(limit) {
+    if (limit === undefined || !Number.isFinite(limit) || limit <= 0)
+        return DEFAULT_LIMIT;
+    return Math.min(Math.floor(limit), exports.MAX_SEARCH_LIMIT);
+}
+// 엔트리 경로는 `YYYY-MM-DD/HH-MM-SS-micro.md`라 문자열 정렬이 곧 시간순이다.
+// 파일을 열지 않고도 날짜 컷오프와 최신순 정렬을 할 수 있다.
+function dayFromEntryPath(mdPath) {
+    const day = path.basename(path.dirname(mdPath));
+    return /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : undefined;
+}
 class SearchService {
     dataPath;
     embeddings;
@@ -91,7 +106,8 @@ class SearchService {
         return out;
     }
     async search(query, opts = {}) {
-        const limit = opts.limit ?? 10;
+        const limit = clampLimit(opts.limit);
+        const minScore = opts.minScore;
         const qVec = await this.embeddings.generateEmbedding(query, 'query');
         const files = await this.listEntryFiles();
         const scored = [];
@@ -105,6 +121,8 @@ class SearchService {
                     continue;
             }
             const score = this.embeddings.cosineSimilarity(qVec, data.embedding);
+            if (minScore !== undefined && score < minScore)
+                continue;
             scored.push({
                 path: mdPath,
                 score,
@@ -117,15 +135,34 @@ class SearchService {
         return scored.slice(0, limit);
     }
     async listRecent(opts = {}) {
-        const limit = opts.limit ?? 10;
+        const limit = clampLimit(opts.limit);
         const days = opts.days ?? 30;
-        const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+        const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
         const files = await this.listEntryFiles();
+        // 날짜 디렉토리 기준으로 먼저 걸러낸다. 로컬/UTC 경계 때문에 하루 여유를
+        // 두고, 정확한 컷오프는 frontmatter timestamp로 아래에서 확정한다.
+        const cutoffDay = new Date(cutoffMs - 24 * 60 * 60 * 1000)
+            .toISOString()
+            .slice(0, 10);
+        const candidates = files.filter((mdPath) => {
+            const day = dayFromEntryPath(mdPath);
+            return day === undefined || day >= cutoffDay;
+        });
+        // 경로 정렬이 곧 시간순이므로, 최신부터 필요한 개수만 읽는다.
+        candidates.sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
         const entries = [];
-        for (const mdPath of files) {
-            const md = await fs.readFile(mdPath, 'utf8');
+        for (const mdPath of candidates) {
+            if (entries.length >= limit)
+                break;
+            let md;
+            try {
+                md = await fs.readFile(mdPath, 'utf8');
+            }
+            catch {
+                continue;
+            }
             const fm = (0, journal_1.parseFrontmatter)(md);
-            if (fm.timestamp < cutoff)
+            if (fm.timestamp < cutoffMs)
                 continue;
             entries.push({
                 path: mdPath,
@@ -136,7 +173,7 @@ class SearchService {
             });
         }
         entries.sort((a, b) => b.timestamp - a.timestamp);
-        return entries.slice(0, limit);
+        return entries;
     }
     async backfill() {
         const files = await this.listEntryFiles();
