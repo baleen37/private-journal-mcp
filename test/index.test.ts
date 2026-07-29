@@ -116,14 +116,17 @@ describe('runSync', () => {
     expect(backfill).not.toHaveBeenCalled();
   });
 
-  it('skips embedding work entirely when the sync pulled nothing', async () => {
+  // 이 CLI는 MCP 서버와 별개 프로세스라, 서버를 안 쓰는 기기에서는 기동
+  // backfill()이 실행되지 않는다. pull이 없을 때 전체 스캔을 아예 건너뛰면
+  // 그런 기기의 미임베딩 엔트리가 영구히 검색되지 않는다.
+  it('falls back to a full scan when the sync pulled nothing', async () => {
     resolveGitRemote.mockReturnValue('resolved.git');
     commitAndPush.mockResolvedValueOnce([]);
 
     await runSync({ dataPath: '/resolved/data/path' });
 
     expect(backfillPaths).not.toHaveBeenCalled();
-    expect(backfill).not.toHaveBeenCalled();
+    expect(backfill).toHaveBeenCalledTimes(1);
   });
 });
 

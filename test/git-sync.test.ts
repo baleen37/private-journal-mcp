@@ -420,6 +420,24 @@ describe('GitSync pull change reporting', () => {
     expect(changed).toContain(path.join(dir, '2026-07-30', 'first.md'));
   }, 30000);
 
+  // 반환값은 "원격 유래"가 아니라 "동기화로 HEAD가 움직이며 바뀐 것"이다.
+  // 임베딩 대상으로는 무해하지만(이미 임베딩이 있어 스킵된다) 계약을 고정해
+  // 다른 용도로 오해하지 않게 한다.
+  it('includes the local commit in commitAndPush changed paths', async () => {
+    const { base, remote } = await createSeedRemote('gs-local-included-');
+    const dir = path.join(base, 'local');
+    const gs = new GitSync(dir, remote);
+    await gs.ensureRepo();
+    await configureGitIdentity(dir);
+
+    await fs.mkdir(path.join(dir, '2026-07-31'), { recursive: true });
+    await fs.writeFile(path.join(dir, '2026-07-31', 'mine.md'), md(500, 'mine'), 'utf8');
+
+    const changed = await gs.commitAndPush('local only');
+
+    expect(changed).toContain(path.join(dir, '2026-07-31', 'mine.md'));
+  }, 30000);
+
   it('reports no changes when the pull brought nothing new', async () => {
     const { base, remote } = await createSeedRemote('gs-pull-noop-');
     const dir = path.join(base, 'local');
