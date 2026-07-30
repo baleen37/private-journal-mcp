@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { EmbeddingService } from './embeddings';
 import { GitSync } from './git-sync';
 import { JournalManager } from './journal';
+import { CURRENT_DATA_VERSION, MigrationManager } from './migrations';
 import { resolveDataPath, resolveGitRemote } from './paths';
 import { SearchService, MAX_SEARCH_LIMIT } from './search';
 import {
@@ -101,6 +102,7 @@ export class PrivateJournalServer {
   private readonly journal: JournalManager;
   private readonly search: SearchService;
   private readonly git: GitSync;
+  private readonly migrations: MigrationManager;
 
   constructor(opts: { dataPath?: string; remote?: string } = {}) {
     this.dataPath = opts.dataPath ?? resolveDataPath();
@@ -108,6 +110,17 @@ export class PrivateJournalServer {
     this.journal = new JournalManager(this.dataPath, embeddings);
     this.search = new SearchService(this.dataPath, embeddings);
     this.git = new GitSync(this.dataPath, resolveGitRemote(opts.remote));
+    this.migrations = new MigrationManager(this.dataPath);
+  }
+
+  private async prepareData(): Promise<string[]> {
+    let pulled: string[] = [];
+    if (this.git.enabled) {
+      await this.git.ensureRepo();
+      pulled = await this.git.pull(CURRENT_DATA_VERSION);
+    }
+    await this.migrations.run();
+    return pulled;
   }
 
   async handleWrite(args: WriteJournalArgs): Promise<{ path: string }> {
@@ -118,6 +131,7 @@ export class PrivateJournalServer {
       throw new Error('At least one journal section must have content.');
     }
 
+    await this.prepareData();
     const entryPath = await this.journal.write(sections);
 
     // 동기화로 들어온 원격 엔트리는 임베딩이 없어 검색에서 조용히 빠진다
@@ -125,7 +139,7 @@ export class PrivateJournalServer {
     // 임베딩해서 다음 재시작까지 기다리지 않게 한다. 방금 쓴 로컬 엔트리도
     // 함께 보고되지만 이미 임베딩이 있어 건너뛴다.
     const sync = this.git
-      .commitAndPush(`journal: ${new Date().toISOString()}`)
+      .commitAndPush(`journal: ${new Date().toISOString()}`, CURRENT_DATA_VERSION)
       .then((synced) => this.embedSynced(synced))
       .catch((error: unknown) => {
         console.error('[private-journal] commitAndPush failed (best-effort):', error);
@@ -194,9 +208,7 @@ export class PrivateJournalServer {
   }
 
   async run(): Promise<void> {
-    await this.git.ensureRepo().catch((error: unknown) => {
-      console.error('[private-journal] ensureRepo failed (best-effort):', error);
-    });
+    await this.prepareData();
 
     await this.search.backfill().catch((error: unknown) => {
       console.error('[private-journal] backfill failed (best-effort):', error);

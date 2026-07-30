@@ -10,7 +10,7 @@ jest.mock('../src/server', () => {
 });
 
 const ensureRepo = jest.fn().mockResolvedValue(undefined);
-const pull = jest.fn().mockResolvedValue(undefined);
+const pull = jest.fn().mockResolvedValue([]);
 const commitAndPush = jest.fn().mockResolvedValue([]);
 
 jest.mock('../src/git-sync', () => ({
@@ -20,6 +20,13 @@ jest.mock('../src/git-sync', () => ({
     pull,
     commitAndPush,
   })),
+}));
+
+const mockMigrationsRun = jest.fn().mockResolvedValue(undefined);
+
+jest.mock('../src/migrations', () => ({
+  CURRENT_DATA_VERSION: 1,
+  MigrationManager: jest.fn().mockImplementation(() => ({ run: mockMigrationsRun })),
 }));
 
 const backfill = jest.fn().mockResolvedValue(0);
@@ -74,6 +81,7 @@ describe('runSync', () => {
     ensureRepo.mockClear();
     pull.mockClear();
     commitAndPush.mockClear();
+    mockMigrationsRun.mockClear();
     backfill.mockClear();
     backfillPaths.mockClear();
     resolveDataPath.mockClear();
@@ -82,7 +90,7 @@ describe('runSync', () => {
     (GitSync as jest.Mock).mockClear();
   });
 
-  it('is a no-op when remote is undefined', async () => {
+  it('runs migration and backfill when remote is undefined', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'idx-'));
 
     await runSync({ dataPath: dir, remote: undefined });
@@ -92,7 +100,8 @@ describe('runSync', () => {
     expect(ensureRepo).not.toHaveBeenCalled();
     expect(pull).not.toHaveBeenCalled();
     expect(commitAndPush).not.toHaveBeenCalled();
-    expect(backfill).not.toHaveBeenCalled();
+    expect(mockMigrationsRun).toHaveBeenCalledTimes(1);
+    expect(backfill).toHaveBeenCalledTimes(1);
     expect(backfillPaths).not.toHaveBeenCalled();
   });
 
@@ -108,7 +117,7 @@ describe('runSync', () => {
 
   it('embeds only the pulled entries instead of scanning the whole corpus', async () => {
     resolveGitRemote.mockReturnValue('resolved.git');
-    commitAndPush.mockResolvedValueOnce(['/data/2026-07-30/a.md', '/data/2026-07-30/b.md']);
+    pull.mockResolvedValueOnce(['/data/2026-07-30/a.md', '/data/2026-07-30/b.md']);
 
     await runSync({ dataPath: '/resolved/data/path' });
 
@@ -121,12 +130,21 @@ describe('runSync', () => {
   // 그런 기기의 미임베딩 엔트리가 영구히 검색되지 않는다.
   it('falls back to a full scan when the sync pulled nothing', async () => {
     resolveGitRemote.mockReturnValue('resolved.git');
-    commitAndPush.mockResolvedValueOnce([]);
+    pull.mockResolvedValueOnce([]);
 
     await runSync({ dataPath: '/resolved/data/path' });
 
     expect(backfillPaths).not.toHaveBeenCalled();
     expect(backfill).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs migration after pull and before sync commit', async () => {
+    resolveGitRemote.mockReturnValue('resolved.git');
+
+    await runSync({ dataPath: '/resolved/data/path' });
+
+    expect(pull.mock.invocationCallOrder[0]).toBeLessThan(mockMigrationsRun.mock.invocationCallOrder[0]);
+    expect(mockMigrationsRun.mock.invocationCallOrder[0]).toBeLessThan(commitAndPush.mock.invocationCallOrder[0]);
   });
 });
 
@@ -135,6 +153,7 @@ describe('main', () => {
     ensureRepo.mockClear();
     pull.mockClear();
     commitAndPush.mockClear();
+    mockMigrationsRun.mockClear();
     backfill.mockClear();
     backfillPaths.mockClear();
     resolveDataPath.mockClear();

@@ -1,0 +1,359 @@
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.MigrationManager = exports.DataVersionError = exports.MIGRATION_TRANSACTION_FILENAME = exports.DATA_VERSION_FILENAME = exports.CURRENT_DATA_VERSION = void 0;
+const fs = __importStar(require("fs/promises"));
+const path = __importStar(require("path"));
+exports.CURRENT_DATA_VERSION = 1;
+exports.DATA_VERSION_FILENAME = '.private-journal-version.json';
+exports.MIGRATION_TRANSACTION_FILENAME = '.private-journal-migration-transaction.json';
+const SYNC_LOCK_FILENAME = '.private-journal-sync.lock';
+class DataVersionError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'DataVersionError';
+    }
+}
+exports.DataVersionError = DataVersionError;
+class MigrationManager {
+    dataPath;
+    migrations;
+    currentVersion;
+    constructor(dataPath, migrations = [], currentVersion = exports.CURRENT_DATA_VERSION) {
+        this.dataPath = dataPath;
+        this.migrations = migrations;
+        this.currentVersion = currentVersion;
+    }
+    async readVersion() {
+        const versionPath = path.join(this.dataRootPath(), exports.DATA_VERSION_FILENAME);
+        let raw;
+        try {
+            raw = await fs.readFile(versionPath, 'utf8');
+        }
+        catch (error) {
+            if (error.code === 'ENOENT')
+                return 1;
+            throw error;
+        }
+        let metadata;
+        try {
+            metadata = JSON.parse(raw);
+        }
+        catch {
+            throw new DataVersionError(`Invalid data version metadata at ${versionPath}`);
+        }
+        if (typeof metadata !== 'object'
+            || metadata === null
+            || Array.isArray(metadata)
+            || !Object.prototype.hasOwnProperty.call(metadata, 'version')
+            || !Number.isInteger(metadata.version)
+            || metadata.version <= 0) {
+            throw new DataVersionError(`Invalid data version metadata at ${versionPath}`);
+        }
+        return metadata.version;
+    }
+    async run() {
+        await this.recoverInterruptedActivation();
+        if (!Number.isInteger(this.currentVersion) || this.currentVersion <= 0) {
+            throw new DataVersionError('Current data version must be a positive integer');
+        }
+        this.validateRegistry();
+        const hasVersionFile = await this.hasVersionFile();
+        const version = await this.readVersion();
+        if (version > this.currentVersion) {
+            throw new DataVersionError(`Data version ${version} is newer than this app supports (${this.currentVersion}); update the app`);
+        }
+        if (version === this.currentVersion) {
+            if (!hasVersionFile)
+                await this.writeVersion(this.dataRootPath(), version);
+            return;
+        }
+        const stagePath = await this.createStage();
+        try {
+            const invalidatedMarkdownPaths = new Set();
+            let invalidateAllEmbeddings = false;
+            for (const migration of this.migrationSequence(version)) {
+                const result = await migration.apply(stagePath);
+                const paths = this.validateMigrationResult(result, stagePath);
+                paths.forEach((markdownPath) => invalidatedMarkdownPaths.add(markdownPath));
+                invalidateAllEmbeddings ||= result.invalidateAllEmbeddings === true;
+            }
+            for (const markdownPath of invalidatedMarkdownPaths) {
+                await fs.rm(path.join(stagePath, markdownPath.replace(/\.md$/, '.embedding')), { force: true });
+            }
+            if (invalidateAllEmbeddings)
+                await this.removeAllEmbeddings(stagePath);
+            await this.writeVersion(stagePath, this.currentVersion);
+        }
+        catch (error) {
+            await fs.rm(stagePath, { recursive: true, force: true });
+            throw error;
+        }
+        await this.activateStage(stagePath);
+    }
+    dataRootPath() {
+        return path.resolve(this.dataPath);
+    }
+    transactionPath() {
+        return path.join(path.dirname(this.dataRootPath()), exports.MIGRATION_TRANSACTION_FILENAME);
+    }
+    validateRegistry() {
+        const fromVersions = new Set();
+        for (const migration of this.migrations) {
+            if (!Number.isInteger(migration.from)
+                || !Number.isInteger(migration.to)
+                || migration.from <= 0
+                || migration.to <= 0
+                || migration.to !== migration.from + 1) {
+                throw new DataVersionError('Migration registry entries must be consecutive positive integer versions');
+            }
+            if (fromVersions.has(migration.from)) {
+                throw new DataVersionError(`Migration registry has duplicate from version ${migration.from}`);
+            }
+            fromVersions.add(migration.from);
+        }
+    }
+    migrationSequence(version) {
+        const sequence = [];
+        let nextVersion = version;
+        while (nextVersion < this.currentVersion) {
+            const matches = this.migrations.filter((migration) => migration.from === nextVersion);
+            if (matches.length !== 1 || matches[0].to !== nextVersion + 1) {
+                throw new DataVersionError(`Missing consecutive migration for ${nextVersion} -> ${nextVersion + 1}`);
+            }
+            sequence.push(matches[0]);
+            nextVersion = matches[0].to;
+        }
+        return sequence;
+    }
+    async createStage() {
+        const dataPath = this.dataRootPath();
+        const stagePath = await fs.mkdtemp(path.join(path.dirname(dataPath), '.private-journal-migrate-'));
+        try {
+            await fs.cp(dataPath, stagePath, {
+                recursive: true,
+                force: true,
+                filter: (source) => !this.isPreservedRootEntry(dataPath, source),
+            });
+            return stagePath;
+        }
+        catch (error) {
+            await fs.rm(stagePath, { recursive: true, force: true });
+            throw error;
+        }
+    }
+    isPreservedRootEntry(rootPath, entryPath) {
+        return path.dirname(entryPath) === rootPath
+            && (path.basename(entryPath) === '.git' || path.basename(entryPath) === SYNC_LOCK_FILENAME);
+    }
+    validateMigrationResult(result, stagePath) {
+        if (!result || !Array.isArray(result.invalidatedMarkdownPaths)) {
+            throw new DataVersionError('Migration result must provide invalidated markdown paths');
+        }
+        if (result.invalidateAllEmbeddings !== undefined && typeof result.invalidateAllEmbeddings !== 'boolean') {
+            throw new DataVersionError('Migration result has an invalid embedding invalidation flag');
+        }
+        return result.invalidatedMarkdownPaths.map((markdownPath) => {
+            if (typeof markdownPath !== 'string'
+                || path.isAbsolute(markdownPath)
+                || path.win32.isAbsolute(markdownPath)
+                || !markdownPath.endsWith('.md')
+                || markdownPath.split(/[\\/]/).some((segment) => segment === '..')) {
+                throw new DataVersionError(`Invalid migration markdown path: ${String(markdownPath)}`);
+            }
+            const targetPath = path.resolve(stagePath, markdownPath);
+            if (!this.isWithinDirectory(stagePath, targetPath)) {
+                throw new DataVersionError(`Invalid migration markdown path: ${markdownPath}`);
+            }
+            return markdownPath;
+        });
+    }
+    async removeAllEmbeddings(directory) {
+        const entries = await fs.readdir(directory, { withFileTypes: true });
+        for (const entry of entries) {
+            const entryPath = path.join(directory, entry.name);
+            if (entry.isDirectory()) {
+                await this.removeAllEmbeddings(entryPath);
+            }
+            else if (entry.name.endsWith('.embedding')) {
+                await fs.rm(entryPath, { force: true });
+            }
+        }
+    }
+    async hasVersionFile() {
+        try {
+            await fs.access(path.join(this.dataRootPath(), exports.DATA_VERSION_FILENAME));
+            return true;
+        }
+        catch (error) {
+            if (error.code === 'ENOENT')
+                return false;
+            throw error;
+        }
+    }
+    async activateStage(stagePath) {
+        const dataPath = this.dataRootPath();
+        const backupPath = await fs.mkdtemp(path.join(path.dirname(dataPath), '.private-journal-backup-'));
+        const transaction = {
+            state: 'prepared',
+            dataPath,
+            stagePath,
+            backupPath,
+        };
+        let transactionWritten = false;
+        try {
+            await this.writeTransaction(transaction);
+            transactionWritten = true;
+            await this.moveEntries(dataPath, backupPath, true);
+            transaction.state = 'backed-up';
+            await this.writeTransaction(transaction);
+            await this.moveEntries(stagePath, dataPath, false);
+            transaction.state = 'activated';
+            await this.writeTransaction(transaction);
+            await this.cleanupTransaction(transaction);
+        }
+        catch (error) {
+            if (transactionWritten) {
+                try {
+                    await this.recoverInterruptedActivation();
+                }
+                catch (recoveryError) {
+                    throw new DataVersionError(`Migration activation failed and original data could not be restored; preserve ${backupPath} and ${stagePath}: ${String(recoveryError)}`);
+                }
+            }
+            else {
+                await fs.rm(stagePath, { recursive: true, force: true });
+                await fs.rm(backupPath, { recursive: true, force: true });
+            }
+            throw error;
+        }
+    }
+    async moveEntries(sourcePath, targetPath, excludePreservedEntries) {
+        const entries = await fs.readdir(sourcePath);
+        for (const entry of entries) {
+            const entryPath = path.join(sourcePath, entry);
+            if (excludePreservedEntries && this.isPreservedRootEntry(sourcePath, entryPath))
+                continue;
+            await fs.rename(entryPath, path.join(targetPath, entry));
+        }
+    }
+    async recoverInterruptedActivation() {
+        const transactionPath = this.transactionPath();
+        let raw;
+        try {
+            raw = await fs.readFile(transactionPath, 'utf8');
+        }
+        catch (error) {
+            if (error.code === 'ENOENT')
+                return;
+            throw error;
+        }
+        const transaction = this.parseTransaction(raw, transactionPath);
+        if (transaction.state === 'prepared') {
+            await this.restoreBackup(transaction, false);
+        }
+        else if (transaction.state === 'backed-up') {
+            await this.restoreBackup(transaction, true);
+        }
+        await this.cleanupTransaction(transaction);
+    }
+    parseTransaction(raw, transactionPath) {
+        let parsed;
+        try {
+            parsed = JSON.parse(raw);
+        }
+        catch {
+            throw new DataVersionError(`Invalid migration transaction metadata at ${transactionPath}`);
+        }
+        if (typeof parsed !== 'object'
+            || parsed === null
+            || Array.isArray(parsed)
+            || !['prepared', 'backed-up', 'activated'].includes(parsed.state)
+            || typeof parsed.dataPath !== 'string'
+            || typeof parsed.stagePath !== 'string'
+            || typeof parsed.backupPath !== 'string') {
+            throw new DataVersionError(`Invalid migration transaction metadata at ${transactionPath}`);
+        }
+        const transaction = parsed;
+        const dataPath = this.dataRootPath();
+        const parentPath = path.dirname(dataPath);
+        if (path.resolve(transaction.dataPath) !== dataPath
+            || !this.isDirectChildOf(parentPath, transaction.stagePath)
+            || !this.isDirectChildOf(parentPath, transaction.backupPath)) {
+            throw new DataVersionError(`Migration transaction paths must stay inside ${parentPath}`);
+        }
+        return {
+            ...transaction,
+            dataPath,
+            stagePath: path.resolve(transaction.stagePath),
+            backupPath: path.resolve(transaction.backupPath),
+        };
+    }
+    isDirectChildOf(parentPath, childPath) {
+        return path.dirname(path.resolve(childPath)) === parentPath;
+    }
+    isWithinDirectory(directory, candidate) {
+        const relative = path.relative(path.resolve(directory), path.resolve(candidate));
+        return relative !== '' && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
+    }
+    async restoreBackup(transaction, clearDataFirst) {
+        if (clearDataFirst)
+            await this.removeMigratableEntries(transaction.dataPath);
+        await fs.mkdir(transaction.dataPath, { recursive: true });
+        await this.moveEntries(transaction.backupPath, transaction.dataPath, false);
+    }
+    async removeMigratableEntries(dataPath) {
+        const entries = await fs.readdir(dataPath);
+        for (const entry of entries) {
+            const entryPath = path.join(dataPath, entry);
+            if (this.isPreservedRootEntry(dataPath, entryPath))
+                continue;
+            await fs.rm(entryPath, { recursive: true, force: true });
+        }
+    }
+    async writeTransaction(transaction) {
+        await fs.writeFile(this.transactionPath(), JSON.stringify(transaction), 'utf8');
+    }
+    async cleanupTransaction(transaction) {
+        await fs.rm(transaction.backupPath, { recursive: true, force: true });
+        await fs.rm(transaction.stagePath, { recursive: true, force: true });
+        await fs.rm(this.transactionPath(), { force: true });
+    }
+    async writeVersion(targetPath, version) {
+        await fs.mkdir(targetPath, { recursive: true });
+        await fs.writeFile(path.join(targetPath, exports.DATA_VERSION_FILENAME), `{"version":${version}}\n`, 'utf8');
+    }
+}
+exports.MigrationManager = MigrationManager;

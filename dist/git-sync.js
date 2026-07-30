@@ -41,6 +41,7 @@ const util_1 = require("util");
 const fs = __importStar(require("fs/promises"));
 const path = __importStar(require("path"));
 const journal_1 = require("./journal");
+const migrations_1 = require("./migrations");
 const run = (0, util_1.promisify)(child_process_1.execFile);
 const gitEnv = { ...process.env, GIT_EDITOR: process.env.GIT_EDITOR ?? 'true' };
 const DEFAULT_GIT_TIMEOUT_MS = 10000;
@@ -80,7 +81,7 @@ function isRebaseConflictError(error) {
 // fetch가 요청한 ref를 찾지 못한 경우. 이 메시지만으로는 "새 remote"인지
 // "브랜치명 오타"인지 구분할 수 없으므로 호출부에서 remote 상태를 함께 확인한다.
 function isMissingRemoteBranchError(error) {
-    return /couldn't find remote ref|no such ref was fetched/i.test(gitErrorText(error));
+    return /couldn't find remote ref|no such ref was fetched|invalid upstream/i.test(gitErrorText(error));
 }
 function logGitFailure(prefix, error) {
     console.error(prefix, gitErrorText(error));
@@ -355,12 +356,51 @@ class GitSync {
     // HEAD를 움직이므로 방금 쓴 로컬 엔트리가 함께 보고된다. 임베딩 대상으로는
     // 무해하다(이미 임베딩이 있어 backfillPaths가 건너뛴다) — 이 반환값을
     // "원격 유래"로 해석하는 다른 용도에 쓰면 안 된다.
-    async pull() {
+    async pull(supportedVersion = migrations_1.CURRENT_DATA_VERSION) {
         if (!this.enabled)
             return [];
         if (!(await this.hasGitDir()))
             return [];
-        return this.trackingChangedMarkdown(() => this.withLock(() => this.pullUnlocked()));
+        return this.trackingChangedMarkdown(() => this.withLock(() => this.pullUnlocked(supportedVersion)));
+    }
+    async assertRemoteVersionSupported(supportedVersion) {
+        const branch = await this.currentBranch();
+        try {
+            await this.runNet(['fetch', 'origin', branch]);
+        }
+        catch (error) {
+            if (isMissingRemoteBranchError(error) && await this.remoteHasNoBranches())
+                return;
+            throw error;
+        }
+        let raw;
+        try {
+            raw = (await this.git(['show', `origin/${branch}:${migrations_1.DATA_VERSION_FILENAME}`])).stdout;
+        }
+        catch (error) {
+            if (/path .* does not exist in|exists on disk, but not in/i.test(gitErrorText(error)))
+                return;
+            throw error;
+        }
+        let metadata;
+        try {
+            metadata = JSON.parse(raw);
+        }
+        catch {
+            throw new migrations_1.DataVersionError(`Invalid remote data version metadata in ${migrations_1.DATA_VERSION_FILENAME}`);
+        }
+        if (typeof metadata !== 'object'
+            || metadata === null
+            || Array.isArray(metadata)
+            || !Object.prototype.hasOwnProperty.call(metadata, 'version')
+            || !Number.isInteger(metadata.version)
+            || metadata.version <= 0) {
+            throw new migrations_1.DataVersionError(`Invalid remote data version metadata in ${migrations_1.DATA_VERSION_FILENAME}`);
+        }
+        const remoteVersion = metadata.version;
+        if (remoteVersion > supportedVersion) {
+            throw new migrations_1.DataVersionError(`Journal data version ${remoteVersion} is newer than this app supports (${supportedVersion}). Update the app.`);
+        }
     }
     // 작업 전후 HEAD를 비교해 새로 들어온 md 경로를 돌려준다.
     async trackingChangedMarkdown(work) {
@@ -409,13 +449,15 @@ class GitSync {
             return false;
         }
     }
-    async pullUnlocked() {
+    async pullUnlocked(supportedVersion = migrations_1.CURRENT_DATA_VERSION) {
         try {
             const branch = await this.currentBranch();
-            await this.runNet(['fetch', 'origin', branch]);
+            await this.assertRemoteVersionSupported(supportedVersion);
             await this.git(['rebase', '--autostash', `origin/${branch}`]);
         }
         catch (err) {
+            if (err instanceof migrations_1.DataVersionError)
+                throw err;
             if (isRebaseConflictError(err)) {
                 await this.resolveRebaseConflicts();
                 return;
@@ -447,6 +489,9 @@ class GitSync {
             if (conflicted.length === 0)
                 break;
             for (const rel of conflicted) {
+                if (rel === migrations_1.DATA_VERSION_FILENAME) {
+                    throw new migrations_1.DataVersionError(`Data version metadata conflict in ${migrations_1.DATA_VERSION_FILENAME}; resolve it before syncing`);
+                }
                 if (rel.endsWith('.md')) {
                     await this.resolveMdConflict(rel);
                 }
@@ -598,14 +643,15 @@ class GitSync {
     }
     // pull()과 동일하게, 동기화로 추가/수정된 md 경로를 돌려준다(로컬 커밋분
     // 포함). 동기화가 스킵되거나(록 경합) HEAD가 그대로면 빈 배열이다.
-    async commitAndPush(message) {
+    async commitAndPush(message, supportedVersion = migrations_1.CURRENT_DATA_VERSION) {
         if (!this.enabled)
             return [];
-        return this.trackingChangedMarkdown(() => this.withLock(() => this.commitAndPushUnlocked(message)));
+        return this.trackingChangedMarkdown(() => this.withLock(() => this.commitAndPushUnlocked(message, supportedVersion)));
     }
-    async commitAndPushUnlocked(message) {
+    async commitAndPushUnlocked(message, supportedVersion) {
+        await this.ensureRepo();
+        await this.assertRemoteVersionSupported(supportedVersion);
         try {
-            await this.ensureRepo();
             await this.recoverFromInterruptedRebase();
             await this.abortIfIndexUnmerged();
             await this.git(['add', '-A']);
@@ -617,7 +663,7 @@ class GitSync {
                     // 올릴 것이 없어도 받을 것은 있을 수 있다. 여기서 그냥 리턴하면
                     // 쓰기가 없는 기기(주로 읽기만 하는 기기)는 원격 변경을 영구히
                     // 받지 못한다. push 루프를 건너뛰되 pull은 반드시 한다.
-                    await this.pullUnlocked();
+                    await this.pullUnlocked(supportedVersion);
                     return;
                 }
                 logGitFailure('[private-journal] git commit failed (best-effort):', err);
@@ -625,7 +671,7 @@ class GitSync {
             }
             const branch = await this.currentBranch();
             for (let attempt = 0; attempt < PUSH_RETRY_LIMIT; attempt++) {
-                await this.pullUnlocked();
+                await this.pullUnlocked(supportedVersion);
                 try {
                     await this.runNet(['push', '-u', 'origin', branch]);
                     return;

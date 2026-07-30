@@ -52,7 +52,8 @@ Run locally:
 node dist/index.js
 ```
 
-The `sync` subcommand exits as a no-op when no Git remote is configured.
+Without a Git remote, the `sync` subcommand still runs local data migrations and
+rebuilds missing embeddings, but does not perform Git operations.
 
 ```bash
 node dist/index.js sync
@@ -152,11 +153,18 @@ Behavior:
 - `node dist/index.js sync` pulls and pushes any pending commits before a
   session starts.
 
+### Data-format compatibility
+
+When the same journal is used on multiple computers, an app that upgrades the
+journal data format records the new version in the journal. Older app versions
+then stop before reading or writing and tell you to update, instead of risking
+an incompatible change.
+
 ## SessionStart sync hook
 
 When installed as a plugin, the SessionStart sync hook is registered automatically
-(see `hooks/hooks.json`) — nothing to configure. It exits as a no-op unless
-a configured remote is available.
+(see `hooks/hooks.json`) — nothing to configure. Without a configured remote it
+still runs local data migrations and embedding backfill.
 
 To wire it up manually instead, add to `~/.claude/settings.json`:
 
