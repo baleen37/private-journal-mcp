@@ -65,6 +65,7 @@ describe('GitSync data version compatibility', () => {
     const { remote, branch, base } = await createSeedRemote('gs-version-');
     const peer = path.join(base, 'peer');
     await run('git', ['clone', remote, peer]);
+    await configureGitIdentity(peer);
     await fs.writeFile(path.join(peer, '.private-journal-version.json'), '{"version":2}\n', 'utf8');
     await run('git', ['add', '.private-journal-version.json'], { cwd: peer });
     await run('git', ['commit', '-m', 'data v2'], { cwd: peer });
