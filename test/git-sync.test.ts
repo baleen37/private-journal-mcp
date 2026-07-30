@@ -1,4 +1,5 @@
 import { chooseConflictWinner, GitSync, resolveGitTimeoutMs } from '../src/git-sync';
+import { DataVersionError } from '../src/migrations';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs/promises';
@@ -56,6 +57,85 @@ describe('GitSync (disabled when no remote)', () => {
     await gs.ensureRepo();
     await gs.commitAndPush('msg'); // should not throw
     await expect(fs.access(path.join(dir, '.git'))).rejects.toBeDefined();
+  });
+});
+
+describe('GitSync data version compatibility', () => {
+  it('refuses to pull a remote data version newer than the supported version', async () => {
+    const { remote, branch, base } = await createSeedRemote('gs-version-');
+    const peer = path.join(base, 'peer');
+    await run('git', ['clone', remote, peer]);
+    await fs.writeFile(path.join(peer, '.private-journal-version.json'), '{"version":2}\n', 'utf8');
+    await run('git', ['add', '.private-journal-version.json'], { cwd: peer });
+    await run('git', ['commit', '-m', 'data v2'], { cwd: peer });
+    await run('git', ['push', 'origin', branch], { cwd: peer });
+
+    const local = path.join(base, 'local');
+    await run('git', ['clone', remote, local]);
+    const sync = new GitSync(local, remote);
+
+    await expect(sync.pull(1)).rejects.toThrow('newer than this app');
+  });
+
+  it('does not auto-resolve a .private-journal-version.json rebase conflict', async () => {
+    const { remote, branch, base } = await createSeedRemote('gs-version-conflict-');
+    const seed = path.join(base, 'seed');
+    await fs.writeFile(path.join(seed, '.private-journal-version.json'), '{"version":1}\n', 'utf8');
+    await run('git', ['add', '.private-journal-version.json'], { cwd: seed });
+    await run('git', ['commit', '-m', 'data v1'], { cwd: seed });
+    await run('git', ['push', 'origin', branch], { cwd: seed });
+
+    const local = path.join(base, 'local');
+    const peer = path.join(base, 'peer');
+    await Promise.all([run('git', ['clone', remote, local]), run('git', ['clone', remote, peer])]);
+    await configureGitIdentity(local);
+    await configureGitIdentity(peer);
+    await fs.writeFile(path.join(peer, '.private-journal-version.json'), '{"version":2}\n', 'utf8');
+    await run('git', ['commit', '-am', 'peer v2'], { cwd: peer });
+    await run('git', ['push', 'origin', branch], { cwd: peer });
+    await fs.writeFile(path.join(local, '.private-journal-version.json'), '{"version":3}\n', 'utf8');
+    await run('git', ['commit', '-am', 'local v3'], { cwd: local });
+
+    await expect(new GitSync(local, remote).pull(3)).rejects.toThrow(DataVersionError);
+    const { stdout } = await run('git', ['diff', '--name-only', '--diff-filter=U'], { cwd: local });
+    expect(stdout).toContain('.private-journal-version.json');
+  });
+
+  it('keeps a local entry and does not push when preflight sees a future remote version', async () => {
+    const { remote, branch, base } = await createSeedRemote('gs-future-push-');
+    const local = path.join(base, 'local');
+    const peer = path.join(base, 'peer');
+    await Promise.all([run('git', ['clone', remote, local]), run('git', ['clone', remote, peer])]);
+    await configureGitIdentity(local);
+    await configureGitIdentity(peer);
+    await fs.writeFile(path.join(peer, '.private-journal-version.json'), '{"version":2}\n', 'utf8');
+    await run('git', ['add', '.private-journal-version.json'], { cwd: peer });
+    await run('git', ['commit', '-m', 'data v2'], { cwd: peer });
+    await run('git', ['push', 'origin', branch], { cwd: peer });
+    await fs.writeFile(path.join(local, 'offline.md'), md(999, 'preserve me'), 'utf8');
+
+    await expect(new GitSync(local, remote).commitAndPush('journal: test', 1)).rejects.toThrow(DataVersionError);
+    await expect(fs.readFile(path.join(local, 'offline.md'), 'utf8')).resolves.toContain('preserve me');
+    const verify = path.join(base, 'verify');
+    await run('git', ['clone', remote, verify]);
+    await expect(fs.access(path.join(verify, 'offline.md'))).rejects.toBeDefined();
+  });
+
+  it('pushes when the remote data version is supported', async () => {
+    const { remote, base } = await createSeedRemote('gs-supported-push-');
+    const local = path.join(base, 'local');
+    await run('git', ['clone', remote, local]);
+    await configureGitIdentity(local);
+    await fs.writeFile(path.join(local, '.private-journal-version.json'), '{"version":1}\n', 'utf8');
+    await fs.writeFile(path.join(local, 'fresh.md'), md(1000, 'current format'), 'utf8');
+
+    await new GitSync(local, remote).commitAndPush('journal: test', 1);
+
+    const verify = path.join(base, 'verify');
+    await run('git', ['clone', remote, verify]);
+    await expect(fs.readFile(path.join(verify, '.private-journal-version.json'), 'utf8'))
+      .resolves.toBe('{"version":1}\n');
+    await expect(fs.readFile(path.join(verify, 'fresh.md'), 'utf8')).resolves.toContain('current format');
   });
 });
 
@@ -265,6 +345,7 @@ describe('GitSync best-effort error handling', () => {
       .mockResolvedValueOnce({ stdout: '', stderr: '' }) // add -A
       .mockRejectedValueOnce(error); // commit
     const ensureRepo = jest.spyOn(gs, 'ensureRepo').mockResolvedValue();
+    jest.spyOn(gs, 'assertRemoteVersionSupported').mockResolvedValue();
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
 
     // commitAndPush도 전후 HEAD를 비교하므로 순서 검증을 위해 따로 스텁한다.
@@ -296,6 +377,7 @@ describe('GitSync best-effort error handling', () => {
 
     jest.spyOn(gs as any, 'hasGitDir').mockResolvedValue(true);
     jest.spyOn(gs as any, 'currentBranch').mockResolvedValue('main');
+    jest.spyOn(gs, 'assertRemoteVersionSupported').mockResolvedValue();
     (gs as any).runNet = jest.fn().mockResolvedValue({ stdout: '', stderr: '' });
     (gs as any).git = jest.fn().mockRejectedValue(error);
 
@@ -352,6 +434,7 @@ describe('GitSync best-effort error handling', () => {
     // pull()은 전후 HEAD를 비교해 변경 경로를 계산한다. 이 테스트는 mock된 git의
     // 호출 순서를 검증하므로, HEAD 조회는 따로 스텁해 순서를 건드리지 않는다.
     jest.spyOn(gs as any, 'headSha').mockResolvedValue('same-sha');
+    jest.spyOn(gs, 'assertRemoteVersionSupported').mockResolvedValue();
     (gs as any).runNet = jest.fn().mockResolvedValue({ stdout: '', stderr: '' });
     (gs as any).git = git;
 

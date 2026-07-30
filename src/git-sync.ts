@@ -3,6 +3,11 @@ import { promisify } from 'util';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { parseFrontmatter } from './journal';
+import {
+  CURRENT_DATA_VERSION,
+  DATA_VERSION_FILENAME,
+  DataVersionError,
+} from './migrations';
 
 const run = promisify(execFile);
 const gitEnv = { ...process.env, GIT_EDITOR: process.env.GIT_EDITOR ?? 'true' };
@@ -46,7 +51,7 @@ function isRebaseConflictError(error: unknown): boolean {
 // fetch가 요청한 ref를 찾지 못한 경우. 이 메시지만으로는 "새 remote"인지
 // "브랜치명 오타"인지 구분할 수 없으므로 호출부에서 remote 상태를 함께 확인한다.
 function isMissingRemoteBranchError(error: unknown): boolean {
-  return /couldn't find remote ref|no such ref was fetched/i.test(gitErrorText(error));
+  return /couldn't find remote ref|no such ref was fetched|invalid upstream/i.test(gitErrorText(error));
 }
 
 function logGitFailure(prefix: string, error: unknown): void {
@@ -322,10 +327,52 @@ export class GitSync {
   // HEAD를 움직이므로 방금 쓴 로컬 엔트리가 함께 보고된다. 임베딩 대상으로는
   // 무해하다(이미 임베딩이 있어 backfillPaths가 건너뛴다) — 이 반환값을
   // "원격 유래"로 해석하는 다른 용도에 쓰면 안 된다.
-  async pull(): Promise<string[]> {
+  async pull(supportedVersion: number = CURRENT_DATA_VERSION): Promise<string[]> {
     if (!this.enabled) return [];
     if (!(await this.hasGitDir())) return [];
-    return this.trackingChangedMarkdown(() => this.withLock(() => this.pullUnlocked()));
+    return this.trackingChangedMarkdown(() => this.withLock(() => this.pullUnlocked(supportedVersion)));
+  }
+
+  async assertRemoteVersionSupported(supportedVersion: number): Promise<void> {
+    const branch = await this.currentBranch();
+    try {
+      await this.runNet(['fetch', 'origin', branch]);
+    } catch (error) {
+      if (isMissingRemoteBranchError(error) && await this.remoteHasNoBranches()) return;
+      throw error;
+    }
+
+    let raw: string;
+    try {
+      raw = (await this.git(['show', `origin/${branch}:${DATA_VERSION_FILENAME}`])).stdout;
+    } catch (error) {
+      if (/path .* does not exist in|exists on disk, but not in/i.test(gitErrorText(error))) return;
+      throw error;
+    }
+
+    let metadata: unknown;
+    try {
+      metadata = JSON.parse(raw);
+    } catch {
+      throw new DataVersionError(`Invalid remote data version metadata in ${DATA_VERSION_FILENAME}`);
+    }
+    if (
+      typeof metadata !== 'object'
+      || metadata === null
+      || Array.isArray(metadata)
+      || !Object.prototype.hasOwnProperty.call(metadata, 'version')
+      || !Number.isInteger((metadata as { version?: unknown }).version)
+      || (metadata as { version: number }).version <= 0
+    ) {
+      throw new DataVersionError(`Invalid remote data version metadata in ${DATA_VERSION_FILENAME}`);
+    }
+
+    const remoteVersion = (metadata as { version: number }).version;
+    if (remoteVersion > supportedVersion) {
+      throw new DataVersionError(
+        `Journal data version ${remoteVersion} is newer than this app supports (${supportedVersion}). Update the app.`,
+      );
+    }
   }
 
   // 작업 전후 HEAD를 비교해 새로 들어온 md 경로를 돌려준다.
@@ -375,12 +422,13 @@ export class GitSync {
     }
   }
 
-  private async pullUnlocked(): Promise<void> {
+  private async pullUnlocked(supportedVersion: number = CURRENT_DATA_VERSION): Promise<void> {
     try {
       const branch = await this.currentBranch();
-      await this.runNet(['fetch', 'origin', branch]);
+      await this.assertRemoteVersionSupported(supportedVersion);
       await this.git(['rebase', '--autostash', `origin/${branch}`]);
     } catch (err) {
+      if (err instanceof DataVersionError) throw err;
       if (isRebaseConflictError(err)) {
         await this.resolveRebaseConflicts();
         return;
@@ -410,6 +458,11 @@ export class GitSync {
       }
       if (conflicted.length === 0) break;
       for (const rel of conflicted) {
+        if (rel === DATA_VERSION_FILENAME) {
+          throw new DataVersionError(
+            `Data version metadata conflict in ${DATA_VERSION_FILENAME}; resolve it before syncing`,
+          );
+        }
         if (rel.endsWith('.md')) {
           await this.resolveMdConflict(rel);
         } else {
@@ -552,16 +605,20 @@ export class GitSync {
 
   // pull()과 동일하게, 동기화로 추가/수정된 md 경로를 돌려준다(로컬 커밋분
   // 포함). 동기화가 스킵되거나(록 경합) HEAD가 그대로면 빈 배열이다.
-  async commitAndPush(message: string): Promise<string[]> {
+  async commitAndPush(
+    message: string,
+    supportedVersion: number = CURRENT_DATA_VERSION,
+  ): Promise<string[]> {
     if (!this.enabled) return [];
     return this.trackingChangedMarkdown(() =>
-      this.withLock(() => this.commitAndPushUnlocked(message)),
+      this.withLock(() => this.commitAndPushUnlocked(message, supportedVersion)),
     );
   }
 
-  private async commitAndPushUnlocked(message: string): Promise<void> {
+  private async commitAndPushUnlocked(message: string, supportedVersion: number): Promise<void> {
+    await this.ensureRepo();
+    await this.assertRemoteVersionSupported(supportedVersion);
     try {
-      await this.ensureRepo();
       await this.recoverFromInterruptedRebase();
       await this.abortIfIndexUnmerged();
       await this.git(['add', '-A']);
@@ -572,7 +629,7 @@ export class GitSync {
           // 올릴 것이 없어도 받을 것은 있을 수 있다. 여기서 그냥 리턴하면
           // 쓰기가 없는 기기(주로 읽기만 하는 기기)는 원격 변경을 영구히
           // 받지 못한다. push 루프를 건너뛰되 pull은 반드시 한다.
-          await this.pullUnlocked();
+          await this.pullUnlocked(supportedVersion);
           return;
         }
         logGitFailure('[private-journal] git commit failed (best-effort):', err);
@@ -580,7 +637,7 @@ export class GitSync {
       }
       const branch = await this.currentBranch();
       for (let attempt = 0; attempt < PUSH_RETRY_LIMIT; attempt++) {
-        await this.pullUnlocked();
+        await this.pullUnlocked(supportedVersion);
         try {
           await this.runNet(['push', '-u', 'origin', branch]);
           return;
@@ -595,6 +652,7 @@ export class GitSync {
         }
       }
     } catch (err) {
+      if (err instanceof DataVersionError) throw err;
       logGitFailure('[private-journal] git sync failed (best-effort):', err);
     }
   }

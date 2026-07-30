@@ -2,6 +2,7 @@
 
 import { EmbeddingService } from './embeddings';
 import { GitSync } from './git-sync';
+import { CURRENT_DATA_VERSION, MigrationManager } from './migrations';
 import { resolveDataPath, resolveGitRemote } from './paths';
 import { SearchService } from './search';
 import { PrivateJournalServer } from './server';
@@ -10,13 +11,15 @@ export async function runSync(opts: { dataPath?: string; remote?: string } = {})
   const dataPath = opts.dataPath ?? resolveDataPath();
   const remote = resolveGitRemote(opts.remote);
   const git = new GitSync(dataPath, remote);
+  const migrations = new MigrationManager(dataPath);
+  let pulled: string[] = [];
 
-  if (!git.enabled) {
-    return;
+  if (git.enabled) {
+    await git.ensureRepo();
+    pulled = await git.pull(CURRENT_DATA_VERSION);
   }
 
-  await git.ensureRepo();
-  const pulled = await git.commitAndPush(`journal sync: ${new Date().toISOString()}`);
+  await migrations.run();
 
   const search = new SearchService(dataPath, EmbeddingService.getInstance());
 
@@ -34,6 +37,10 @@ export async function runSync(opts: { dataPath?: string; remote?: string } = {})
   await work.catch((error: unknown) => {
     console.error('[private-journal] backfill failed (best-effort):', error);
   });
+
+  if (git.enabled) {
+    await git.commitAndPush(`journal sync: ${new Date().toISOString()}`, CURRENT_DATA_VERSION);
+  }
 }
 
 export async function main(argv: string[]): Promise<void> {
