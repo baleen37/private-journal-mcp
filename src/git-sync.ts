@@ -652,6 +652,7 @@ export class GitSync {
         }
       }
     } catch (err) {
+      if (err instanceof DataVersionError) throw err;
       logGitFailure('[private-journal] git sync failed (best-effort):', err);
     }
   }

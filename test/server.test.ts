@@ -462,5 +462,18 @@ describe('PrivateJournalServer handlers', () => {
       const result = await srv.handleWrite({ content: 'still works' });
       expect(result.path).toContain('.md');
     });
+
+    it('surfaces an app-update message when sync is blocked by a newer data version', async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-version-blocked-'));
+      const srv = new PrivateJournalServer({ dataPath: dir, remote: 'file:///nonexistent.git' });
+
+      jest.spyOn((srv as any).git, 'ensureRepo').mockResolvedValue(undefined);
+      jest.spyOn((srv as any).git, 'pull').mockResolvedValue([]);
+      jest.spyOn((srv as unknown as { git: { commitAndPush: () => Promise<void> } }).git, 'commitAndPush')
+        .mockRejectedValue(new DataVersionError('Journal data version 2 is newer than this app supports (1). Update the app.'));
+
+      await expect(srv.handleWrite({ content: 'blocked note' }))
+        .rejects.toThrow('Update the app.');
+    });
   });
 });

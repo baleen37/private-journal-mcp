@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { EmbeddingService } from './embeddings';
 import { GitSync } from './git-sync';
 import { JournalManager } from './journal';
-import { CURRENT_DATA_VERSION, MigrationManager } from './migrations';
+import { CURRENT_DATA_VERSION, DataVersionError, MigrationManager } from './migrations';
 import { resolveDataPath, resolveGitRemote } from './paths';
 import { SearchService, MAX_SEARCH_LIMIT } from './search';
 import {
@@ -142,6 +142,7 @@ export class PrivateJournalServer {
       .commitAndPush(`journal: ${new Date().toISOString()}`, CURRENT_DATA_VERSION)
       .then((synced) => this.embedSynced(synced))
       .catch((error: unknown) => {
+        if (error instanceof DataVersionError) throw error;
         console.error('[private-journal] commitAndPush failed (best-effort):', error);
       });
 
@@ -152,8 +153,11 @@ export class PrivateJournalServer {
         resolve();
       }, SYNC_DEADLINE_MS);
     });
-    await Promise.race([sync, deadline]);
-    clearTimeout(timer);
+    try {
+      await Promise.race([sync, deadline]);
+    } finally {
+      clearTimeout(timer);
+    }
 
     return { path: entryPath };
   }

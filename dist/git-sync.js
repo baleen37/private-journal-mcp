@@ -688,6 +688,8 @@ class GitSync {
             }
         }
         catch (err) {
+            if (err instanceof migrations_1.DataVersionError)
+                throw err;
             logGitFailure('[private-journal] git sync failed (best-effort):', err);
         }
     }

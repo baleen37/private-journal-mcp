@@ -121,6 +121,8 @@ class PrivateJournalServer {
             .commitAndPush(`journal: ${new Date().toISOString()}`, migrations_1.CURRENT_DATA_VERSION)
             .then((synced) => this.embedSynced(synced))
             .catch((error) => {
+            if (error instanceof migrations_1.DataVersionError)
+                throw error;
             console.error('[private-journal] commitAndPush failed (best-effort):', error);
         });
         let timer;
@@ -130,8 +132,12 @@ class PrivateJournalServer {
                 resolve();
             }, SYNC_DEADLINE_MS);
         });
-        await Promise.race([sync, deadline]);
-        clearTimeout(timer);
+        try {
+            await Promise.race([sync, deadline]);
+        }
+        finally {
+            clearTimeout(timer);
+        }
         return { path: entryPath };
     }
     async embedSynced(synced) {
