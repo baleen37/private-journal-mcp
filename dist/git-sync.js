@@ -347,7 +347,9 @@ class GitSync {
                 return b;
         }
         catch { /* ignore */ }
-        return 'main';
+        // During an interrupted rebase HEAD is detached. Resolve the branch from
+        // the remote instead of assuming every repository uses `main`.
+        return this.defaultRemoteBranch();
     }
     // 동기화로 HEAD가 움직이며 추가/수정된 md의 절대경로를 돌려준다. 호출자가 그
     // 경로만 임베딩하면 전체 스캔 없이 동기화된 엔트리를 즉시 검색할 수 있다.
