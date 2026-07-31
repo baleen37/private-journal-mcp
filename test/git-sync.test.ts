@@ -64,6 +64,18 @@ describe('GitSync (disabled when no remote)', () => {
   });
 });
 
+describe('GitSync branch recovery', () => {
+  it('uses the remote default branch when a rebase leaves HEAD detached', async () => {
+    const { base, remote } = await createSeedRemote('gs-detached-');
+    const local = path.join(base, 'local');
+    await run('git', ['clone', remote, local]);
+    await run('git', ['checkout', '--detach', 'HEAD'], { cwd: local });
+
+    const sync = new GitSync(local, remote);
+    await expect((sync as any).currentBranch()).resolves.toBe('main');
+  });
+});
+
 describe('GitSync data version compatibility', () => {
   it('refuses to pull a remote data version newer than the supported version', async () => {
     const { remote, branch, base } = await createSeedRemote('gs-version-');
