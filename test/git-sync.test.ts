@@ -29,11 +29,15 @@ async function createSeedRemote(basePrefix: string) {
   await run('git', ['init', '--bare', remote]);
   await run('git', ['clone', remote, seed]);
   await configureGitIdentity(seed);
+  // CI runners may use different init.defaultBranch values. Keep the
+  // fixture's remote branch deterministic so tests exercise sync behavior.
+  await run('git', ['checkout', '-B', 'main'], { cwd: seed });
   await fs.writeFile(path.join(seed, 'entry.md'), md(100, 'seed'), 'utf8');
   await run('git', ['add', 'entry.md'], { cwd: seed });
   await run('git', ['commit', '-m', 'seed remote'], { cwd: seed });
-  const branch = await currentBranch(seed);
+  const branch = 'main';
   await run('git', ['push', '-u', 'origin', branch], { cwd: seed });
+  await run('git', ['symbolic-ref', 'HEAD', 'refs/heads/main'], { cwd: remote });
   return { base, remote, branch };
 }
 

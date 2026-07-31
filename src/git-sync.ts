@@ -317,7 +317,9 @@ export class GitSync {
       const b = stdout.trim();
       if (b && b !== 'HEAD') return b;
     } catch { /* ignore */ }
-    return 'main';
+    // During an interrupted rebase HEAD is detached. Resolve the branch from
+    // the remote instead of assuming every repository uses `main`.
+    return this.defaultRemoteBranch();
   }
 
   // 동기화로 HEAD가 움직이며 추가/수정된 md의 절대경로를 돌려준다. 호출자가 그
