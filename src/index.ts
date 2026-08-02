@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { EmbeddingWorker } from './embedding-worker';
+import { resolveEmbeddingRuntimePaths } from './embedding-runtime';
 import { EmbeddingService } from './embeddings';
 import { GitSync } from './git-sync';
 import { CURRENT_DATA_VERSION, MigrationManager } from './migrations';
@@ -44,6 +46,16 @@ export async function runSync(opts: { dataPath?: string; remote?: string } = {})
 }
 
 export async function main(argv: string[]): Promise<void> {
+  if (argv[2] === 'embedding-worker') {
+    const uid = typeof process.getuid === 'function' ? process.getuid() : 0;
+    const worker = new EmbeddingWorker({
+      runtimePaths: resolveEmbeddingRuntimePaths(process.env, process.platform, uid),
+      idleMs: 0,
+    });
+    await worker.listen();
+    return;
+  }
+
   if (argv[2] === 'sync') {
     await runSync();
     return;
