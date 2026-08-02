@@ -30,6 +30,11 @@ interface PendingRequest {
 interface StartupLock {
   pid: number;
   acquiredAt: number;
+  nonce: string;
+}
+
+interface HeldStartupLock {
+  owner: StartupLock;
 }
 
 function errorCode(error: unknown): string | undefined {
@@ -155,15 +160,14 @@ export class EmbeddingBroker {
           await this.waitForSocket(deadline);
           return;
         } finally {
-          await lock.close();
-          await this.unlinkIfExists(this.runtimePaths.startupLockPath);
+          await this.releaseLock(lock);
         }
       }
 
       if (await this.tryOpenSocket()) return;
       const owner = await this.readStartupLock();
-      if (owner && !this.isProcessAlive(owner.pid) && !await this.socketIsHealthy()) {
-        await this.unlinkIfExists(this.runtimePaths.startupLockPath);
+      if ((!owner || !this.isProcessAlive(owner.pid)) && !await this.socketIsHealthy()) {
+        await this.reclaimStaleLock();
         continue;
       }
       await this.delay();
@@ -171,27 +175,69 @@ export class EmbeddingBroker {
     throw new Error('timed out waiting for embedding worker');
   }
 
-  private async tryAcquireLock(): Promise<fs.FileHandle | null> {
-    let handle: fs.FileHandle;
+  private async tryAcquireLock(): Promise<HeldStartupLock | null> {
     try {
-      handle = await fs.open(this.runtimePaths.startupLockPath, 'wx', 0o600);
+      await fs.mkdir(this.runtimePaths.startupLockPath, { mode: 0o700 });
     } catch (error) {
       if (errorCode(error) === 'EEXIST') return null;
       throw error;
     }
-    const lock: StartupLock = { pid: process.pid, acquiredAt: Date.now() };
-    await handle.writeFile(JSON.stringify(lock), 'utf8');
-    return handle;
+    const owner: StartupLock = {
+      pid: process.pid,
+      acquiredAt: Date.now(),
+      nonce: crypto.randomUUID(),
+    };
+    try {
+      await fs.writeFile(path.join(this.runtimePaths.startupLockPath, 'owner.json'), JSON.stringify(owner), {
+        encoding: 'utf8', mode: 0o600,
+      });
+      return { owner };
+    } catch (error) {
+      await fs.rm(this.runtimePaths.startupLockPath, { recursive: true, force: true });
+      throw error;
+    }
+  }
+
+  private async releaseLock(lock: HeldStartupLock): Promise<void> {
+    const owner = await this.readStartupLock();
+    if (owner?.nonce === lock.owner.nonce) {
+      await fs.rm(this.runtimePaths.startupLockPath, { recursive: true, force: true });
+    }
   }
 
   private async readStartupLock(): Promise<StartupLock | null> {
     try {
-      const value = JSON.parse(await fs.readFile(this.runtimePaths.startupLockPath, 'utf8')) as Partial<StartupLock>;
-      return typeof value.pid === 'number' && typeof value.acquiredAt === 'number'
-        ? { pid: value.pid, acquiredAt: value.acquiredAt }
+      const value = JSON.parse(await fs.readFile(path.join(this.runtimePaths.startupLockPath, 'owner.json'), 'utf8')) as Partial<StartupLock>;
+      return typeof value.pid === 'number' && typeof value.acquiredAt === 'number' && typeof value.nonce === 'string'
+        ? { pid: value.pid, acquiredAt: value.acquiredAt, nonce: value.nonce }
         : null;
     } catch {
       return null;
+    }
+  }
+
+  private async reclaimStaleLock(): Promise<void> {
+    const guardPath = `${this.runtimePaths.startupLockPath}.reclaim`;
+    try {
+      await fs.mkdir(guardPath, { mode: 0o700 });
+    } catch (error) {
+      if (errorCode(error) === 'EEXIST') return;
+      throw error;
+    }
+    try {
+      if (await this.socketIsHealthy()) return;
+      const owner = await this.readStartupLock();
+      if (owner && this.isProcessAlive(owner.pid)) return;
+      const claimedPath = `${guardPath}/claimed`;
+      try {
+        await fs.rename(this.runtimePaths.startupLockPath, claimedPath);
+      } catch (error) {
+        if (errorCode(error) === 'ENOENT') return;
+        throw error;
+      }
+      await fs.rm(claimedPath, { recursive: true, force: true });
+    } finally {
+      await fs.rm(guardPath, { recursive: true, force: true });
     }
   }
 

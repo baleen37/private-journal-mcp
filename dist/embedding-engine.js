@@ -33,53 +33,16 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.EmbeddingService = void 0;
-exports.extractSearchableText = extractSearchableText;
-const fs = __importStar(require("fs/promises"));
+exports.EmbeddingEngine = void 0;
 const paths_1 = require("./paths");
 const MODEL = 'Xenova/multilingual-e5-small';
-const LOAD_TIMEOUT_MS = 30_000;
-function extractSearchableText(md) {
-    const withoutFm = md.replace(/^---\n[\s\S]*?\n---\n?/, '');
-    return withoutFm.replace(/^##\s+/gm, '').trim();
-}
-class EmbeddingService {
-    static instance;
+class EmbeddingEngine {
     extractor = null;
     loading = null;
-    static getInstance() {
-        if (!EmbeddingService.instance)
-            EmbeddingService.instance = new EmbeddingService();
-        return EmbeddingService.instance;
-    }
-    cosineSimilarity(a, b) {
-        let dot = 0, na = 0, nb = 0;
-        for (let i = 0; i < a.length; i++) {
-            dot += a[i] * b[i];
-            na += a[i] * a[i];
-            nb += b[i] * b[i];
-        }
-        if (na === 0 || nb === 0)
-            return 0;
-        return dot / (Math.sqrt(na) * Math.sqrt(nb));
-    }
-    extractSearchableText(md) {
-        return extractSearchableText(md);
-    }
-    embeddingPathFor(mdPath) {
-        return mdPath.replace(/\.md$/, '.embedding');
-    }
-    async saveEmbedding(mdPath, data) {
-        await fs.writeFile(this.embeddingPathFor(mdPath), JSON.stringify(data), 'utf8');
-    }
-    async loadEmbedding(mdPath) {
-        try {
-            const raw = await fs.readFile(this.embeddingPathFor(mdPath), 'utf8');
-            return JSON.parse(raw);
-        }
-        catch {
-            return null;
-        }
+    async embed(text, kind) {
+        const extractor = await this.getExtractor();
+        const output = await extractor(`${kind}: ${text}`, { pooling: 'mean', normalize: true });
+        return Array.from(output.data);
     }
     async getExtractor() {
         if (this.extractor)
@@ -89,26 +52,16 @@ class EmbeddingService {
                 try {
                     const { pipeline, env } = await Promise.resolve().then(() => __importStar(require('@huggingface/transformers')));
                     env.cacheDir = (0, paths_1.resolveModelCachePath)();
-                    const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('embedding model load timed out')), LOAD_TIMEOUT_MS));
-                    this.extractor = await Promise.race([
-                        pipeline('feature-extraction', MODEL),
-                        timeout,
-                    ]);
+                    this.extractor = await pipeline('feature-extraction', MODEL);
                     return this.extractor;
                 }
-                catch (e) {
+                catch (error) {
                     this.loading = null;
-                    throw e;
+                    throw error;
                 }
             })();
         }
         return this.loading;
     }
-    async generateEmbedding(text, kind) {
-        const extractor = await this.getExtractor();
-        const prefixed = `${kind}: ${text}`;
-        const output = await extractor(prefixed, { pooling: 'mean', normalize: true });
-        return Array.from(output.data);
-    }
 }
-exports.EmbeddingService = EmbeddingService;
+exports.EmbeddingEngine = EmbeddingEngine;

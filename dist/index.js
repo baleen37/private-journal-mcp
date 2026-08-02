@@ -3,6 +3,8 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.runSync = runSync;
 exports.main = main;
+const embedding_worker_1 = require("./embedding-worker");
+const embedding_runtime_1 = require("./embedding-runtime");
 const embeddings_1 = require("./embeddings");
 const git_sync_1 = require("./git-sync");
 const migrations_1 = require("./migrations");
@@ -39,6 +41,15 @@ async function runSync(opts = {}) {
     }
 }
 async function main(argv) {
+    if (argv[2] === 'embedding-worker') {
+        const uid = typeof process.getuid === 'function' ? process.getuid() : 0;
+        const worker = new embedding_worker_1.EmbeddingWorker({
+            runtimePaths: (0, embedding_runtime_1.resolveEmbeddingRuntimePaths)(process.env, process.platform, uid),
+            idleMs: 0,
+        });
+        await worker.listen();
+        return;
+    }
     if (argv[2] === 'sync') {
         await runSync();
         return;

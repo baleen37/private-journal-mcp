@@ -119,13 +119,15 @@ describe('EmbeddingBroker', () => {
     await expect(fs.stat(runtimePaths.socketPath)).resolves.toBeDefined();
   });
 
-  it('recovers a stale lock and socket before spawning', async () => {
+  it('lets only one broker reclaim a stale lock and spawn the worker', async () => {
     const runtimePaths = await makeRuntimePaths();
     runtimeDirectories.push(runtimePaths.directory);
     await fs.writeFile(runtimePaths.socketPath, 'stale socket', 'utf8');
-    await fs.writeFile(runtimePaths.startupLockPath, JSON.stringify({
+    await fs.mkdir(runtimePaths.startupLockPath);
+    await fs.writeFile(path.join(runtimePaths.startupLockPath, 'owner.json'), JSON.stringify({
       pid: 999999,
       acquiredAt: Date.now() - 60_000,
+      nonce: 'stale-owner',
     }), 'utf8');
     const spawnWorker = jest.fn(async () => {
       await expect(fs.access(runtimePaths.socketPath)).rejects.toThrow();
@@ -137,15 +139,24 @@ describe('EmbeddingBroker', () => {
       workers.push(worker);
       await worker.listen();
     });
-    const broker = new EmbeddingBroker({
+    const first = new EmbeddingBroker({
       runtimePaths,
       spawnWorker,
       isProcessAlive: () => false,
       pollIntervalMs: 5,
     });
-    brokers.push(broker);
+    const second = new EmbeddingBroker({
+      runtimePaths,
+      spawnWorker,
+      isProcessAlive: () => false,
+      pollIntervalMs: 5,
+    });
+    brokers.push(first, second);
 
-    await expect(broker.embedText('recovered', 'passage')).resolves.toEqual([0.5]);
+    await expect(Promise.all([
+      first.embedText('recovered', 'passage'),
+      second.embedText('recovered', 'passage'),
+    ])).resolves.toEqual([[0.5], [0.5]]);
 
     expect(spawnWorker).toHaveBeenCalledTimes(1);
     await expect(fs.access(runtimePaths.startupLockPath)).rejects.toThrow();
