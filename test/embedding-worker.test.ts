@@ -73,6 +73,47 @@ describe('EmbeddingWorker', () => {
     socket.destroy();
   });
 
+  it('stays available when a client disconnects during inference', async () => {
+    const { dir, socketPath } = await makeFixture();
+    cleanup.push(() => fs.rm(dir, { recursive: true, force: true }));
+    let releaseEmbedding!: () => void;
+    const embeddingCanFinish = new Promise<void>((resolve) => { releaseEmbedding = resolve; });
+    let signalStarted!: () => void;
+    const embeddingStarted = new Promise<void>((resolve) => { signalStarted = resolve; });
+    const worker = new EmbeddingWorker({
+      engine: {
+        embed: async () => {
+          signalStarted();
+          await embeddingCanFinish;
+          return [0.1];
+        },
+      },
+      runtimePaths: { socketPath },
+      idleMs: 0,
+    });
+    cleanup.push(() => worker.close());
+    await worker.listen();
+
+    const disconnectedClient = net.createConnection(socketPath);
+    disconnectedClient.on('error', () => {});
+    await once(disconnectedClient, 'connect');
+    disconnectedClient.write(encodeFrame({ id: 'lost-client', type: 'embedText', text: 'find this', kind: 'query' }));
+    await embeddingStarted;
+    disconnectedClient.destroy();
+    releaseEmbedding();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    const healthyClient = net.createConnection(socketPath);
+    await once(healthyClient, 'connect');
+    const response = once(healthyClient, 'data');
+    healthyClient.write(encodeFrame({ id: 'status', type: 'status' }));
+
+    const [chunk] = await response;
+    const [frame] = new FrameDecoder().push(chunk);
+    expect(frame).toEqual({ id: 'status', active: false });
+    healthyClient.destroy();
+  });
+
   it('closes only the malformed socket connection', async () => {
     const { dir, socketPath } = await makeFixture();
     cleanup.push(() => fs.rm(dir, { recursive: true, force: true }));

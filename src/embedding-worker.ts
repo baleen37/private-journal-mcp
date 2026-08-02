@@ -88,6 +88,7 @@ export class EmbeddingWorker {
 
   private accept(socket: net.Socket): void {
     const decoder = new FrameDecoder();
+    socket.on('error', () => {});
     socket.on('data', (chunk: Buffer) => {
       let requests: unknown[];
       try {

@@ -86,6 +86,7 @@ class EmbeddingWorker {
     }
     accept(socket) {
         const decoder = new embedding_protocol_1.FrameDecoder();
+        socket.on('error', () => { });
         socket.on('data', (chunk) => {
             let requests;
             try {
