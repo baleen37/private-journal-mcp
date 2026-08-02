@@ -116,6 +116,7 @@ export class EmbeddingBroker {
 
   private async sendOnce(request: Record<string, unknown>): Promise<WorkerResponse> {
     await this.ensureConnected();
+    if (this.closed) throw new Error('embedding broker closed');
     const socket = this.socket;
     if (!socket) throw new Error('embedding worker connection unavailable');
     const id = String(request.id);
@@ -139,6 +140,7 @@ export class EmbeddingBroker {
       });
     }
     await this.connecting;
+    if (this.closed) throw new Error('embedding broker closed');
   }
 
   private async connectOrStart(): Promise<void> {
@@ -275,6 +277,11 @@ export class EmbeddingBroker {
       };
       const onConnect = () => {
         socket.removeListener('error', onError);
+        if (this.closed) {
+          socket.destroy();
+          reject(new Error('embedding broker closed'));
+          return;
+        }
         this.attachSocket(socket);
         resolve();
       };
@@ -284,6 +291,10 @@ export class EmbeddingBroker {
   }
 
   private attachSocket(socket: net.Socket): void {
+    if (this.closed) {
+      socket.destroy();
+      return;
+    }
     const decoder = new FrameDecoder();
     this.socket = socket;
     socket.on('data', (chunk) => {
