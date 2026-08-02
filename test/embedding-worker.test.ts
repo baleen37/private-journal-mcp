@@ -3,6 +3,7 @@ import net from 'net';
 import os from 'os';
 import path from 'path';
 import { once } from 'events';
+import { spawn } from 'child_process';
 import { encodeFrame } from '../src/embedding-protocol';
 import { EmbeddingWorker, WorkerRequest } from '../src/embedding-worker';
 import { writeEmbeddingAtomically } from '../src/embedding-sidecar';
@@ -131,6 +132,31 @@ describe('EmbeddingWorker', () => {
     await expect(fs.stat(path.join(dir, 'note.embedding'))).rejects.toThrow();
   });
 
+  it('removes its own sidecar when markdown changes after rename', async () => {
+    const { dir, mdPath } = await makeFixture();
+    cleanup.push(() => fs.rm(dir, { recursive: true, force: true }));
+    const data: EmbeddingData = { embedding: [0.1], text: '# Note\nhello', sections: [], timestamp: 0, path: await fs.realpath(mdPath) };
+    let checks = 0;
+
+    await expect(writeEmbeddingAtomically(mdPath, data, async () => ++checks === 1)).rejects.toThrow('markdown changed');
+    await expect(fs.stat(path.join(dir, 'note.embedding'))).rejects.toThrow();
+  });
+
+  it('keeps a replacement sidecar written after its rename', async () => {
+    const { dir, mdPath } = await makeFixture();
+    cleanup.push(() => fs.rm(dir, { recursive: true, force: true }));
+    const original: EmbeddingData = { embedding: [0.1], text: '# Note\nhello', sections: [], timestamp: 0, path: await fs.realpath(mdPath) };
+    const replacement: EmbeddingData = { ...original, embedding: [0.9] };
+    let checks = 0;
+
+    await expect(writeEmbeddingAtomically(mdPath, original, async () => {
+      checks++;
+      if (checks === 2) await writeEmbeddingAtomically(mdPath, replacement);
+      return checks === 1;
+    })).rejects.toThrow('markdown changed');
+    expect(JSON.parse(await fs.readFile(path.join(dir, 'note.embedding'), 'utf8'))).toEqual(replacement);
+  });
+
   it('runs waiting interactive work between background jobs', async () => {
     const { dir, mdPath, socketPath } = await makeFixture();
     const secondPath = path.join(dir, 'second.md');
@@ -211,6 +237,24 @@ describe('EmbeddingWorker', () => {
 
     await expect(second.listen()).rejects.toMatchObject({ code: 'EADDRINUSE' });
     await second.close();
+    const socket = net.createConnection(socketPath);
+    await once(socket, 'connect');
+    socket.destroy();
+  });
+
+  it('reclaims a stale socket left by a crashed worker', async () => {
+    const { dir, socketPath } = await makeFixture();
+    cleanup.push(() => fs.rm(dir, { recursive: true, force: true }));
+    const child = spawn(process.execPath, ['-e', `
+      const net = require('net');
+      net.createServer().listen(process.argv[1], () => process.kill(process.pid, 'SIGKILL'));
+    `, socketPath]);
+    await once(child, 'exit');
+    expect((await fs.lstat(socketPath)).isSocket()).toBe(true);
+    const worker = new EmbeddingWorker({ engine: { embed: async () => [0.1] }, runtimePaths: { socketPath }, idleMs: 0 });
+    cleanup.push(() => worker.close());
+
+    await worker.listen();
     const socket = net.createConnection(socketPath);
     await once(socket, 'connect');
     socket.destroy();

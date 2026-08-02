@@ -22,12 +22,18 @@ export async function writeEmbeddingAtomically(
 ): Promise<void> {
   const target = mdPath.replace(/\.md$/, '.embedding');
   const temporary = `${target}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  const serialized = JSON.stringify(data);
   let renamed = false;
   try {
-    await fs.writeFile(temporary, JSON.stringify(data), { encoding: 'utf8', mode: 0o600 });
+    await fs.writeFile(temporary, serialized, { encoding: 'utf8', mode: 0o600 });
     if (verifyCurrent && !await verifyCurrent()) throw new Error('markdown changed before sidecar rename');
     await fs.rename(temporary, target);
     renamed = true;
+    if (verifyCurrent && !await verifyCurrent()) {
+      const current = await fs.readFile(target, 'utf8').catch(() => null);
+      if (current === serialized) await fs.rm(target, { force: true });
+      throw new Error('markdown changed before sidecar rename');
+    }
   } finally {
     if (!renamed) await fs.rm(temporary, { force: true });
   }

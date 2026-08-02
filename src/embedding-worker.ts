@@ -71,6 +71,16 @@ export class EmbeddingWorker {
 
   async listen(): Promise<void> {
     if (this.server) return;
+    try {
+      await this.listenOnce();
+    } catch (error) {
+      if (!this.isAddressInUse(error) || await this.socketIsLive()) throw error;
+      await fs.rm(this.runtimePaths.socketPath, { force: true });
+      await this.listenOnce();
+    }
+  }
+
+  private async listenOnce(): Promise<void> {
     const server = net.createServer((socket) => this.accept(socket));
     await new Promise<void>((resolve, reject) => {
       const onError = (error: Error) => {
@@ -87,6 +97,32 @@ export class EmbeddingWorker {
     });
     this.server = server;
     await fs.chmod(this.runtimePaths.socketPath, 0o600);
+  }
+
+  private isAddressInUse(error: unknown): error is NodeJS.ErrnoException {
+    return !!error && typeof error === 'object' && (error as NodeJS.ErrnoException).code === 'EADDRINUSE';
+  }
+
+  private async socketIsLive(): Promise<boolean> {
+    return new Promise<boolean>((resolve, reject) => {
+      const socket = net.createConnection(this.runtimePaths.socketPath);
+      let settled = false;
+      const finish = (result: boolean) => {
+        if (settled) return;
+        settled = true;
+        socket.destroy();
+        resolve(result);
+      };
+      socket.once('connect', () => finish(true));
+      socket.once('error', (error: NodeJS.ErrnoException) => {
+        if (error.code === 'ECONNREFUSED' || error.code === 'ENOENT') {
+          finish(false);
+        } else {
+          socket.destroy();
+          reject(error);
+        }
+      });
+    });
   }
 
   async close(): Promise<void> {
