@@ -19,3 +19,25 @@
 ## 우려사항
 
 - 없음. Task 2에서 추가된 `exports["./server"]`가 현재 HEAD에 존재함을 계약 테스트로 확인했습니다.
+
+## Fix round: OpenCode 공식 plugin 설치 방식 반영
+
+### 변경
+
+- OpenCode published package 안내를 `opencode.json`의 `plugin` 배열 방식으로 변경
+- 기존 CLI 설치 예시를 제거
+- local checkout 안내를 `npm install && npm run build` 후 프로젝트
+  `.opencode/plugins/`에 `opencode-plugin.mjs`를 symlink하는 방식으로 변경
+- package contract 테스트 이름을 실제 package entrypoint 검사 범위에 맞게 수정
+- Claude/Codex/manual MCP 안내는 유지
+
+### 검증
+
+- `npx jest --runInBand --runTestsByPath test/plugin-manifest.test.ts test/bin-launcher.test.ts`
+  - PASS: 2 suites, 3 tests
+- `git diff --check`
+  - PASS: `README.md` diff clean
+
+### 우려사항
+
+- 없음. OpenCode 공식 plugin 문서의 npm config 및 local plugin directory 방식에 맞췄습니다.

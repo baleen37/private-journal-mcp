@@ -16,7 +16,7 @@ describe('Claude plugin manifest', () => {
     });
   });
 
-  it('declares the OpenCode server entrypoint without changing existing plugin manifests', () => {
+  it('declares package entrypoints used by OpenCode and the CLI', () => {
     const packagePath = path.join(__dirname, '..', 'package.json');
     const packageJson = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
 

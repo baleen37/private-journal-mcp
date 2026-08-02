@@ -94,14 +94,26 @@ codex plugin install /absolute/path/to/private-journal-mcp
 
 OpenCode:
 
-```bash
-# Published package
-opencode plugin private-journal-mcp --global
+Published package, in `opencode.json`:
 
-# Local checkout after build
-npm install && npm run build
-opencode plugin /absolute/path/to/private-journal-mcp --global
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["private-journal-mcp"]
+}
 ```
+
+Local checkout:
+
+```bash
+npm install && npm run build
+mkdir -p .opencode/plugins
+ln -sfn "$(pwd)/opencode-plugin.mjs" .opencode/plugins/private-journal-mcp.mjs
+```
+
+The symlink keeps the plugin's relative `dist/` import rooted at the checkout.
+OpenCode automatically loads plugins from the project `.opencode/plugins/`
+directory; use `~/.config/opencode/plugins/` for a global local plugin instead.
 
 The plugin exposes `write_journal`, `search_journal`, `read_journal`, and
 `list_journal` as native OpenCode tools. It uses the same local data path and
