@@ -388,13 +388,21 @@ Expected: PASS after Task 2. If run before Task 2, it must fail because the expo
 
 OpenCode:
 
-~~~bash
-# Published package
-opencode plugin private-journal-mcp --global
+~~~json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["private-journal-mcp"]
+}
+~~~
 
-# Local checkout after build
+For a local checkout, build first and link the entrypoint into the project
+plugin directory so OpenCode loads it automatically:
+
+~~~bash
 npm install && npm run build
-opencode plugin /absolute/path/to/private-journal-mcp --global
+mkdir -p .opencode/plugins
+ln -sfn /absolute/path/to/private-journal-mcp/opencode-plugin.mjs \
+  .opencode/plugins/private-journal-mcp.mjs
 ~~~
 
 The plugin exposes `write_journal`, `search_journal`, `read_journal`, and
@@ -462,7 +470,7 @@ Expected: PASS. Full repository validation, if needed, uses the existing worktre
 npx jest --runInBand --testPathIgnorePatterns='/.worktrees/'
 ~~~
 
-- [ ] **Step 3: local package를 격리된 OpenCode config에 설치**
+- [ ] **Step 3: local plugin을 격리된 OpenCode plugin directory에 연결**
 
 Repository root에서 실행한다. 임시 디렉터리는 실제 사용자 OpenCode 설정을 변경하지 않는다.
 
@@ -471,16 +479,13 @@ tmp_root="$(mktemp -d)"
 config_root="$tmp_root/config"
 cache_root="$tmp_root/cache"
 journal_root="$tmp_root/journal"
-mkdir -p "$config_root" "$cache_root" "$journal_root"
+mkdir -p "$config_root/opencode/plugins" "$cache_root" "$journal_root"
 
-HOME="$tmp_root/home" \
-XDG_CONFIG_HOME="$config_root" \
-XDG_CACHE_HOME="$cache_root" \
-PRIVATE_JOURNAL_PATH="$journal_root" \
-opencode plugin "$PWD" --global
+ln -s "$PWD/opencode-plugin.mjs" \
+  "$config_root/opencode/plugins/private-journal-mcp.mjs"
 ~~~
 
-Expected: isolated global OpenCode config에 repository plugin path가 기록되고 command가 성공한다.
+Expected: isolated global OpenCode plugin directory에 repository entrypoint가 연결된다. OpenCode가 이 directory의 plugin을 startup 시 자동 로드한다.
 
 - [ ] **Step 4: isolated OpenCode에서 native tool registry 확인**
 
@@ -518,5 +523,4 @@ git diff --check
 ~~~
 
 Expected: 의도한 source, test, documentation, package, generated `dist/`만 남고 isolated OpenCode smoke가 repository 파일을 만들지 않는다.
-
 
