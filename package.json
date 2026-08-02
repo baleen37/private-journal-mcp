@@ -6,6 +6,10 @@
     "private-journal-mcp": "./bin/private-journal-mcp"
   },
   "main": "dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./server": "./opencode-plugin.mjs"
+  },
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
