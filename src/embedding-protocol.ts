@@ -1,4 +1,5 @@
 export const WORKER_WIRE_VERSION = 1;
+export const MAX_FRAME_BYTES = 1024 * 1024;
 
 export function encodeFrame(value: unknown): Buffer {
   const body = Buffer.from(JSON.stringify(value), 'utf8');
@@ -16,6 +17,10 @@ export class FrameDecoder {
 
     while (this.buffer.length >= 4) {
       const bodyLength = this.buffer.readUInt32BE(0);
+      if (bodyLength > MAX_FRAME_BYTES) {
+        this.buffer = Buffer.alloc(0);
+        throw new Error('frame exceeds maximum size');
+      }
       if (this.buffer.length < bodyLength + 4) {
         break;
       }

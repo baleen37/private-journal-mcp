@@ -5,6 +5,11 @@ import { resolveModelCachePath } from './paths';
 const MODEL = 'Xenova/multilingual-e5-small';
 const LOAD_TIMEOUT_MS = 30_000;
 
+export function extractSearchableText(md: string): string {
+  const withoutFm = md.replace(/^---\n[\s\S]*?\n---\n?/, '');
+  return withoutFm.replace(/^##\s+/gm, '').trim();
+}
+
 export class EmbeddingService {
   private static instance: EmbeddingService;
   private extractor: any | null = null;
@@ -27,8 +32,7 @@ export class EmbeddingService {
   }
 
   extractSearchableText(md: string): string {
-    const withoutFm = md.replace(/^---\n[\s\S]*?\n---\n?/, '');
-    return withoutFm.replace(/^##\s+/gm, '').trim();
+    return extractSearchableText(md);
   }
 
   embeddingPathFor(mdPath: string): string {

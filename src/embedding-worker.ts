@@ -4,8 +4,7 @@ import path from 'path';
 import { EmbeddingEngine } from './embedding-engine';
 import { FrameDecoder, encodeFrame } from './embedding-protocol';
 import { EmbeddingRuntimePaths } from './embedding-runtime';
-import { hasValidEmbedding, writeEmbeddingAtomically } from './embedding-sidecar';
-import { EmbeddingData } from './types';
+import { embeddingMetadata, hasValidEmbedding, writeEmbeddingAtomically } from './embedding-sidecar';
 
 type Priority = 'interactive' | 'background';
 
@@ -72,12 +71,21 @@ export class EmbeddingWorker {
 
   async listen(): Promise<void> {
     if (this.server) return;
-    await fs.rm(this.runtimePaths.socketPath, { force: true });
-    this.server = net.createServer((socket) => this.accept(socket));
+    const server = net.createServer((socket) => this.accept(socket));
     await new Promise<void>((resolve, reject) => {
-      this.server!.once('error', reject);
-      this.server!.listen(this.runtimePaths.socketPath, () => resolve());
+      const onError = (error: Error) => {
+        server.removeListener('listening', onListening);
+        reject(error);
+      };
+      const onListening = () => {
+        server.removeListener('error', onError);
+        resolve();
+      };
+      server.once('error', onError);
+      server.once('listening', onListening);
+      server.listen(this.runtimePaths.socketPath);
     });
+    this.server = server;
     await fs.chmod(this.runtimePaths.socketPath, 0o600);
   }
 
@@ -85,7 +93,6 @@ export class EmbeddingWorker {
     const server = this.server;
     this.server = null;
     if (server) await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
-    await fs.rm(this.runtimePaths.socketPath, { force: true });
   }
 
   async handle(request: WorkerRequest): Promise<WorkerResponse> {
@@ -208,21 +215,28 @@ export class EmbeddingWorker {
   }
 
   private async ensurePassage(id: string, mdPath: string): Promise<WorkerResponse> {
-    if (await hasValidEmbedding(mdPath)) return { id, created: false };
     let text: string;
     try {
       text = await fs.readFile(mdPath, 'utf8');
     } catch {
       return { id, created: false };
     }
-    const embedding = await this.engine.embed(text, 'passage');
-    const data: EmbeddingData = { embedding, text, sections: [], timestamp: Date.now(), path: mdPath };
+    const metadata = embeddingMetadata(mdPath, text);
+    if (await hasValidEmbedding(mdPath, metadata)) return { id, created: false };
+    const embedding = await this.engine.embed(metadata.text, 'passage');
+    const data = { ...metadata, embedding };
     try {
-      if (await fs.readFile(mdPath, 'utf8') !== text) return { id, created: false };
-    } catch {
-      return { id, created: false };
+      await writeEmbeddingAtomically(mdPath, data, async () => {
+        try {
+          return await fs.readFile(mdPath, 'utf8') === text;
+        } catch {
+          return false;
+        }
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === 'markdown changed before sidecar rename') return { id, created: false };
+      throw error;
     }
-    await writeEmbeddingAtomically(mdPath, data);
     return { id, created: true };
   }
 }
