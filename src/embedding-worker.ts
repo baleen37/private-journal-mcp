@@ -1,20 +1,8 @@
 import * as fs from 'fs/promises';
 import net from 'net';
-import path from 'path';
 import { EmbeddingEngine } from './embedding-engine';
 import { FrameDecoder, encodeFrame } from './embedding-protocol';
 import { EmbeddingRuntimePaths } from './embedding-runtime';
-import { embeddingMetadata, hasValidEmbedding, writeEmbeddingAtomically } from './embedding-sidecar';
-
-type Priority = 'interactive' | 'background';
-
-export interface EnsurePassageRequest {
-  id: string;
-  type: 'ensurePassage';
-  dataPath: string;
-  mdPath: string;
-  priority: Priority;
-}
 
 export interface EmbedTextRequest {
   id: string;
@@ -28,11 +16,10 @@ export interface StatusRequest {
   type: 'status';
 }
 
-export type WorkerRequest = EnsurePassageRequest | EmbedTextRequest | StatusRequest;
+export type WorkerRequest = EmbedTextRequest | StatusRequest;
 
 export interface WorkerResponse {
-  id: string;
-  created?: boolean;
+  id?: string;
   embedding?: number[];
   error?: string;
   active?: boolean;
@@ -57,9 +44,7 @@ interface QueuedJob<T> {
 export class EmbeddingWorker {
   private readonly engine: WorkerEngine;
   private readonly runtimePaths: Pick<EmbeddingRuntimePaths, 'socketPath'>;
-  private readonly interactive: QueuedJob<unknown>[] = [];
-  private readonly background: QueuedJob<unknown>[] = [];
-  private readonly pendingPassages = new Map<string, Promise<WorkerResponse>>();
+  private readonly queue: QueuedJob<unknown>[] = [];
   private server: net.Server | null = null;
   private active = false;
   private draining = false;
@@ -71,16 +56,6 @@ export class EmbeddingWorker {
 
   async listen(): Promise<void> {
     if (this.server) return;
-    try {
-      await this.listenOnce();
-    } catch (error) {
-      if (!this.isAddressInUse(error) || await this.socketIsLive()) throw error;
-      await fs.rm(this.runtimePaths.socketPath, { force: true });
-      await this.listenOnce();
-    }
-  }
-
-  private async listenOnce(): Promise<void> {
     const server = net.createServer((socket) => this.accept(socket));
     await new Promise<void>((resolve, reject) => {
       const onError = (error: Error) => {
@@ -99,32 +74,6 @@ export class EmbeddingWorker {
     await fs.chmod(this.runtimePaths.socketPath, 0o600);
   }
 
-  private isAddressInUse(error: unknown): error is NodeJS.ErrnoException {
-    return !!error && typeof error === 'object' && (error as NodeJS.ErrnoException).code === 'EADDRINUSE';
-  }
-
-  private async socketIsLive(): Promise<boolean> {
-    return new Promise<boolean>((resolve, reject) => {
-      const socket = net.createConnection(this.runtimePaths.socketPath);
-      let settled = false;
-      const finish = (result: boolean) => {
-        if (settled) return;
-        settled = true;
-        socket.destroy();
-        resolve(result);
-      };
-      socket.once('connect', () => finish(true));
-      socket.once('error', (error: NodeJS.ErrnoException) => {
-        if (error.code === 'ECONNREFUSED' || error.code === 'ENOENT') {
-          finish(false);
-        } else {
-          socket.destroy();
-          reject(error);
-        }
-      });
-    });
-  }
-
   async close(): Promise<void> {
     const server = this.server;
     this.server = null;
@@ -133,31 +82,8 @@ export class EmbeddingWorker {
 
   async handle(request: WorkerRequest): Promise<WorkerResponse> {
     if (request.type === 'status') return { id: request.id, active: this.active };
-    if (request.type === 'embedText') {
-      const embedding = await this.enqueue('interactive', () => this.engine.embed(request.text, request.kind));
-      return { id: request.id, embedding };
-    }
-
-    let mdPath: string;
-    try {
-      mdPath = await this.resolveMarkdownPath(request.dataPath, request.mdPath);
-    } catch (error) {
-      return { id: request.id, created: false, error: error instanceof Error ? error.message : String(error) };
-    }
-
-    const pending = this.pendingPassages.get(mdPath);
-    if (pending) {
-      const result = await pending;
-      return { ...result, id: request.id, created: false };
-    }
-
-    const job = this.enqueue(request.priority, () => this.ensurePassage(request.id, mdPath));
-    this.pendingPassages.set(mdPath, job);
-    try {
-      return await job;
-    } finally {
-      this.pendingPassages.delete(mdPath);
-    }
+    const embedding = await this.enqueue(() => this.engine.embed(request.text, request.kind));
+    return { id: request.id, embedding };
   }
 
   private accept(socket: net.Socket): void {
@@ -170,9 +96,7 @@ export class EmbeddingWorker {
         socket.destroy();
         return;
       }
-      for (const value of requests) {
-        void this.reply(socket, value);
-      }
+      for (const value of requests) void this.reply(socket, value);
     });
   }
 
@@ -199,19 +123,12 @@ export class EmbeddingWorker {
       && (request.kind === 'passage' || request.kind === 'query')) {
       return { id: request.id, type: 'embedText', text: request.text, kind: request.kind };
     }
-    if (request.type === 'ensurePassage'
-      && typeof request.dataPath === 'string'
-      && typeof request.mdPath === 'string'
-      && (request.priority === 'interactive' || request.priority === 'background')) {
-      return { id: request.id, type: 'ensurePassage', dataPath: request.dataPath, mdPath: request.mdPath, priority: request.priority };
-    }
     return null;
   }
 
-  private enqueue<T>(priority: Priority, run: () => Promise<T>): Promise<T> {
+  private enqueue<T>(run: () => Promise<T>): Promise<T> {
     return new Promise<T>((resolve, reject) => {
-      const queue = priority === 'interactive' ? this.interactive : this.background;
-      queue.push({ run, resolve: resolve as (value: unknown) => void, reject });
+      this.queue.push({ run, resolve: resolve as (value: unknown) => void, reject });
       void this.drain();
     });
   }
@@ -221,7 +138,7 @@ export class EmbeddingWorker {
     this.draining = true;
     try {
       while (true) {
-        const job = this.interactive.shift() ?? this.background.shift();
+        const job = this.queue.shift();
         if (!job) return;
         this.active = true;
         try {
@@ -234,45 +151,7 @@ export class EmbeddingWorker {
       }
     } finally {
       this.draining = false;
-      if (this.interactive.length || this.background.length) void this.drain();
+      if (this.queue.length) void this.drain();
     }
-  }
-
-  private async resolveMarkdownPath(dataPath: string, mdPath: string): Promise<string> {
-    const [dataRealPath, markdownRealPath] = await Promise.all([fs.realpath(dataPath), fs.realpath(mdPath)]);
-    const relative = path.relative(dataRealPath, markdownRealPath);
-    if (relative === '' || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-      throw new Error('markdown path is outside data path');
-    }
-    if (path.extname(markdownRealPath) !== '.md' || !(await fs.stat(markdownRealPath)).isFile()) {
-      throw new Error('markdown path must be a regular .md file');
-    }
-    return markdownRealPath;
-  }
-
-  private async ensurePassage(id: string, mdPath: string): Promise<WorkerResponse> {
-    let text: string;
-    try {
-      text = await fs.readFile(mdPath, 'utf8');
-    } catch {
-      return { id, created: false };
-    }
-    const metadata = embeddingMetadata(mdPath, text);
-    if (await hasValidEmbedding(mdPath, metadata)) return { id, created: false };
-    const embedding = await this.engine.embed(metadata.text, 'passage');
-    const data = { ...metadata, embedding };
-    try {
-      await writeEmbeddingAtomically(mdPath, data, async () => {
-        try {
-          return await fs.readFile(mdPath, 'utf8') === text;
-        } catch {
-          return false;
-        }
-      });
-    } catch (error) {
-      if (error instanceof Error && error.message === 'markdown changed before sidecar rename') return { id, created: false };
-      throw error;
-    }
-    return { id, created: true };
   }
 }

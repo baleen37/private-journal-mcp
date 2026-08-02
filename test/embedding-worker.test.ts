@@ -3,21 +3,12 @@ import net from 'net';
 import os from 'os';
 import path from 'path';
 import { once } from 'events';
-import { spawn } from 'child_process';
-import { encodeFrame } from '../src/embedding-protocol';
-import { EmbeddingWorker, WorkerRequest } from '../src/embedding-worker';
-import { writeEmbeddingAtomically } from '../src/embedding-sidecar';
-import { EmbeddingData } from '../src/types';
+import { encodeFrame, FrameDecoder } from '../src/embedding-protocol';
+import { EmbeddingWorker } from '../src/embedding-worker';
 
-async function makeFixture(): Promise<{ dir: string; mdPath: string; socketPath: string }> {
+async function makeFixture(): Promise<{ dir: string; socketPath: string }> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'embedding-worker-test-'));
-  const mdPath = path.join(dir, 'note.md');
-  await fs.writeFile(mdPath, '# Note\nhello', 'utf8');
-  return { dir, mdPath, socketPath: path.join(dir, 'embedding.sock') };
-}
-
-function passageRequest(id: string, dir: string, mdPath: string, priority: 'interactive' | 'background' = 'interactive'): WorkerRequest {
-  return { id, type: 'ensurePassage', dataPath: dir, mdPath, priority };
+  return { dir, socketPath: path.join(dir, 'embedding.sock') };
 }
 
 describe('EmbeddingWorker', () => {
@@ -26,168 +17,60 @@ describe('EmbeddingWorker', () => {
   afterEach(async () => {
     for (const fn of cleanup.reverse()) await fn();
     cleanup = [];
-    jest.restoreAllMocks();
   });
 
-  it('coalesces simultaneous passage requests for one markdown file', async () => {
-    const { dir, mdPath, socketPath } = await makeFixture();
+  it('runs embedText inference one request at a time', async () => {
+    const { dir, socketPath } = await makeFixture();
     cleanup.push(() => fs.rm(dir, { recursive: true, force: true }));
-    const engine = { embed: jest.fn(async () => [0.1, 0.2]) };
-    const worker = new EmbeddingWorker({ engine, runtimePaths: { socketPath }, idleMs: 0 });
-    cleanup.push(() => worker.close());
-    await worker.listen();
-
-    const [first, second] = await Promise.all([
-      worker.handle(passageRequest('1', dir, mdPath)),
-      worker.handle(passageRequest('2', dir, mdPath)),
-    ]);
-
-    expect([first.created, second.created].filter(Boolean)).toHaveLength(1);
-    expect(engine.embed).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(await fs.readFile(path.join(dir, 'note.embedding'), 'utf8'))).toMatchObject({ embedding: [0.1, 0.2], text: '# Note\nhello', path: await fs.realpath(mdPath) });
-  });
-
-  it('replaces sidecars without exposing invalid JSON to readers', async () => {
-    const { dir, mdPath } = await makeFixture();
-    cleanup.push(() => fs.rm(dir, { recursive: true, force: true }));
-    const data: EmbeddingData = { embedding: [0.1, 0.2], text: 'hello', sections: [], timestamp: 1, path: mdPath };
-
-    await writeEmbeddingAtomically(mdPath, data);
-
-    expect(JSON.parse(await fs.readFile(path.join(dir, 'note.embedding'), 'utf8'))).toEqual(data);
-  });
-
-  it('keeps an existing valid sidecar without running inference', async () => {
-    const { dir, mdPath, socketPath } = await makeFixture();
-    cleanup.push(() => fs.rm(dir, { recursive: true, force: true }));
-    const existing: EmbeddingData = { embedding: [0.9], text: '# Note\nhello', sections: [], timestamp: 0, path: await fs.realpath(mdPath) };
-    await writeEmbeddingAtomically(mdPath, existing);
-    const engine = { embed: jest.fn(async () => [0.1]) };
-    const worker = new EmbeddingWorker({ engine, runtimePaths: { socketPath }, idleMs: 0 });
-
-    await expect(worker.handle(passageRequest('1', dir, mdPath))).resolves.toMatchObject({ created: false });
-    expect(JSON.parse(await fs.readFile(path.join(dir, 'note.embedding'), 'utf8'))).toEqual(existing);
-  });
-
-  it('regenerates a structurally valid sidecar whose content no longer matches markdown', async () => {
-    const { dir, mdPath, socketPath } = await makeFixture();
-    cleanup.push(() => fs.rm(dir, { recursive: true, force: true }));
-    const stale: EmbeddingData = { embedding: [0.9], text: '# Note\nold', sections: [], timestamp: 0, path: await fs.realpath(mdPath) };
-    await writeEmbeddingAtomically(mdPath, stale);
-    const worker = new EmbeddingWorker({ engine: { embed: async () => [0.1] }, runtimePaths: { socketPath }, idleMs: 0 });
-
-    await expect(worker.handle(passageRequest('1', dir, mdPath))).resolves.toMatchObject({ created: true });
-    expect(JSON.parse(await fs.readFile(path.join(dir, 'note.embedding'), 'utf8'))).toMatchObject({ embedding: [0.1], text: '# Note\nhello', sections: [], timestamp: 0, path: await fs.realpath(mdPath) });
-  });
-
-  it('uses searchable text, journal sections, and frontmatter timestamp in sidecars', async () => {
-    const { dir, mdPath, socketPath } = await makeFixture();
-    cleanup.push(() => fs.rm(dir, { recursive: true, force: true }));
-    await fs.writeFile(mdPath, '---\ntimestamp: 123\n---\n\n## Observations\n\nnoticed this\n', 'utf8');
-    const worker = new EmbeddingWorker({ engine: { embed: async () => [0.1] }, runtimePaths: { socketPath }, idleMs: 0 });
-
-    await expect(worker.handle(passageRequest('1', dir, mdPath))).resolves.toMatchObject({ created: true });
-    expect(JSON.parse(await fs.readFile(path.join(dir, 'note.embedding'), 'utf8'))).toMatchObject({
-      embedding: [0.1],
-      text: 'Observations\n\nnoticed this',
-      sections: ['observations'],
-      timestamp: 123,
-      path: await fs.realpath(mdPath),
-    });
-  });
-
-  it('rejects a markdown path outside its data directory after resolving symlinks', async () => {
-    const { dir, mdPath, socketPath } = await makeFixture();
-    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'embedding-worker-outside-'));
-    const linkedPath = path.join(dir, 'linked.md');
-    await fs.writeFile(path.join(outside, 'secret.md'), 'secret', 'utf8');
-    await fs.symlink(path.join(outside, 'secret.md'), linkedPath);
-    cleanup.push(() => fs.rm(dir, { recursive: true, force: true }), () => fs.rm(outside, { recursive: true, force: true }));
-    const worker = new EmbeddingWorker({ engine: { embed: async () => [0.1] }, runtimePaths: { socketPath }, idleMs: 0 });
-
-    await expect(worker.handle(passageRequest('1', dir, linkedPath))).resolves.toMatchObject({ created: false, error: 'markdown path is outside data path' });
-  });
-
-  it('does not save a sidecar when markdown changes during embedding', async () => {
-    const { dir, mdPath, socketPath } = await makeFixture();
-    cleanup.push(() => fs.rm(dir, { recursive: true, force: true }));
-    const engine = {
-      embed: async () => {
-        await fs.writeFile(mdPath, '# Note\nchanged', 'utf8');
-        return [0.1];
-      },
-    };
-    const worker = new EmbeddingWorker({ engine, runtimePaths: { socketPath }, idleMs: 0 });
-
-    await expect(worker.handle(passageRequest('1', dir, mdPath))).resolves.toMatchObject({ created: false });
-    await expect(fs.stat(path.join(dir, 'note.embedding'))).rejects.toThrow();
-  });
-
-  it('does not rename a sidecar when its final markdown check fails', async () => {
-    const { dir, mdPath } = await makeFixture();
-    cleanup.push(() => fs.rm(dir, { recursive: true, force: true }));
-    const data: EmbeddingData = { embedding: [0.1], text: '# Note\nhello', sections: [], timestamp: 0, path: await fs.realpath(mdPath) };
-
-    await expect(writeEmbeddingAtomically(mdPath, data, async () => false)).rejects.toThrow('markdown changed');
-    await expect(fs.stat(path.join(dir, 'note.embedding'))).rejects.toThrow();
-  });
-
-  it('removes its own sidecar when markdown changes after rename', async () => {
-    const { dir, mdPath } = await makeFixture();
-    cleanup.push(() => fs.rm(dir, { recursive: true, force: true }));
-    const data: EmbeddingData = { embedding: [0.1], text: '# Note\nhello', sections: [], timestamp: 0, path: await fs.realpath(mdPath) };
-    let checks = 0;
-
-    await expect(writeEmbeddingAtomically(mdPath, data, async () => ++checks === 1)).rejects.toThrow('markdown changed');
-    await expect(fs.stat(path.join(dir, 'note.embedding'))).rejects.toThrow();
-  });
-
-  it('keeps a replacement sidecar written after its rename', async () => {
-    const { dir, mdPath } = await makeFixture();
-    cleanup.push(() => fs.rm(dir, { recursive: true, force: true }));
-    const original: EmbeddingData = { embedding: [0.1], text: '# Note\nhello', sections: [], timestamp: 0, path: await fs.realpath(mdPath) };
-    const replacement: EmbeddingData = { ...original, embedding: [0.9] };
-    let checks = 0;
-
-    await expect(writeEmbeddingAtomically(mdPath, original, async () => {
-      checks++;
-      if (checks === 2) await writeEmbeddingAtomically(mdPath, replacement);
-      return checks === 1;
-    })).rejects.toThrow('markdown changed');
-    expect(JSON.parse(await fs.readFile(path.join(dir, 'note.embedding'), 'utf8'))).toEqual(replacement);
-  });
-
-  it('runs waiting interactive work between background jobs', async () => {
-    const { dir, mdPath, socketPath } = await makeFixture();
-    const secondPath = path.join(dir, 'second.md');
-    const interactivePath = path.join(dir, 'interactive.md');
-    await fs.writeFile(secondPath, 'second', 'utf8');
-    await fs.writeFile(interactivePath, 'interactive', 'utf8');
-    cleanup.push(() => fs.rm(dir, { recursive: true, force: true }));
-    const started: string[] = [];
+    let active = 0;
+    let maximumActive = 0;
     let releaseFirst!: () => void;
-    const firstStarted = new Promise<void>((resolve) => { releaseFirst = resolve; });
-    let unblockFirst!: () => void;
-    const firstUnblocked = new Promise<void>((resolve) => { unblockFirst = resolve; });
+    const firstCanFinish = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let firstStarted!: () => void;
+    const started = new Promise<void>((resolve) => { firstStarted = resolve; });
     const engine = {
       embed: async (text: string) => {
-        started.push(text);
-        if (text === '# Note\nhello') {
-          releaseFirst();
-          await firstUnblocked;
+        active++;
+        maximumActive = Math.max(maximumActive, active);
+        if (text === 'first') {
+          firstStarted();
+          await firstCanFinish;
         }
-        return [0.1];
+        active--;
+        return text === 'first' ? [0.1] : [0.2];
       },
     };
     const worker = new EmbeddingWorker({ engine, runtimePaths: { socketPath }, idleMs: 0 });
-    const first = worker.handle(passageRequest('1', dir, mdPath, 'background'));
-    const second = worker.handle(passageRequest('2', dir, secondPath, 'background'));
-    await firstStarted;
-    const interactive = worker.handle(passageRequest('3', dir, interactivePath));
-    unblockFirst();
-    await Promise.all([first, second, interactive]);
 
-    expect(started).toEqual(['# Note\nhello', 'interactive', 'second']);
+    const first = worker.handle({ id: '1', type: 'embedText', text: 'first', kind: 'query' });
+    await started;
+    const second = worker.handle({ id: '2', type: 'embedText', text: 'second', kind: 'passage' });
+    await Promise.resolve();
+    expect(maximumActive).toBe(1);
+    releaseFirst();
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      { id: '1', embedding: [0.1] },
+      { id: '2', embedding: [0.2] },
+    ]);
+  });
+
+  it('returns a framed vector response with the matching request id', async () => {
+    const { dir, socketPath } = await makeFixture();
+    cleanup.push(() => fs.rm(dir, { recursive: true, force: true }));
+    const worker = new EmbeddingWorker({ engine: { embed: async () => [0.1, 0.2] }, runtimePaths: { socketPath }, idleMs: 0 });
+    cleanup.push(() => worker.close());
+    await worker.listen();
+    const socket = net.createConnection(socketPath);
+    await once(socket, 'connect');
+    const response = once(socket, 'data');
+
+    socket.write(encodeFrame({ id: 'request-1', type: 'embedText', text: 'find this', kind: 'query' }));
+
+    const [chunk] = await response;
+    const [frame] = new FrameDecoder().push(chunk);
+    expect(frame).toEqual({ id: 'request-1', embedding: [0.1, 0.2] });
+    socket.destroy();
   });
 
   it('closes only the malformed socket connection', async () => {
@@ -202,7 +85,7 @@ describe('EmbeddingWorker', () => {
     socket.write(Buffer.concat([Buffer.from([0, 0, 0, 1]), Buffer.from('{')]));
     await once(socket, 'close');
 
-    expect(await worker.handle({ id: 'status', type: 'status' })).toMatchObject({ id: 'status' });
+    await expect(worker.handle({ id: 'status', type: 'status' })).resolves.toMatchObject({ id: 'status' });
   });
 
   it('closes a socket that advertises a frame larger than the protocol limit', async () => {
@@ -227,7 +110,7 @@ describe('EmbeddingWorker', () => {
     }
   });
 
-  it('preserves a live worker socket when another worker cannot bind it', async () => {
+  it('fails to bind an already-live socket without unlinking it', async () => {
     const { dir, socketPath } = await makeFixture();
     cleanup.push(() => fs.rm(dir, { recursive: true, force: true }));
     const first = new EmbeddingWorker({ engine: { embed: async () => [0.1] }, runtimePaths: { socketPath }, idleMs: 0 });
@@ -242,26 +125,10 @@ describe('EmbeddingWorker', () => {
     socket.destroy();
   });
 
-  it('reclaims a stale socket left by a crashed worker', async () => {
+  it('rejects journal requests without creating a sidecar', async () => {
     const { dir, socketPath } = await makeFixture();
-    cleanup.push(() => fs.rm(dir, { recursive: true, force: true }));
-    const child = spawn(process.execPath, ['-e', `
-      const net = require('net');
-      net.createServer().listen(process.argv[1], () => process.kill(process.pid, 'SIGKILL'));
-    `, socketPath]);
-    await once(child, 'exit');
-    expect((await fs.lstat(socketPath)).isSocket()).toBe(true);
-    const worker = new EmbeddingWorker({ engine: { embed: async () => [0.1] }, runtimePaths: { socketPath }, idleMs: 0 });
-    cleanup.push(() => worker.close());
-
-    await worker.listen();
-    const socket = net.createConnection(socketPath);
-    await once(socket, 'connect');
-    socket.destroy();
-  });
-
-  it('writes responses to valid socket frames', async () => {
-    const { dir, socketPath } = await makeFixture();
+    const mdPath = path.join(dir, 'entry.md');
+    await fs.writeFile(mdPath, '# Journal entry', 'utf8');
     cleanup.push(() => fs.rm(dir, { recursive: true, force: true }));
     const worker = new EmbeddingWorker({ engine: { embed: async () => [0.1] }, runtimePaths: { socketPath }, idleMs: 0 });
     cleanup.push(() => worker.close());
@@ -270,11 +137,15 @@ describe('EmbeddingWorker', () => {
     await once(socket, 'connect');
     const response = once(socket, 'data');
 
-    socket.write(encodeFrame({ id: 'status', type: 'status' }));
+    try {
+      socket.write(encodeFrame({ id: 'journal', type: 'ensurePassage', dataPath: dir, mdPath, priority: 'interactive' }));
 
-    const [frame] = await response;
-    expect(frame.readUInt32BE(0)).toBeGreaterThan(0);
-    expect(JSON.parse(frame.subarray(4).toString('utf8'))).toMatchObject({ id: 'status' });
-    socket.destroy();
+      const [chunk] = await response;
+      const [frame] = new FrameDecoder().push(chunk);
+      expect(frame).toEqual({ error: 'invalid worker request' });
+      await expect(fs.stat(path.join(dir, 'entry.embedding'))).rejects.toThrow();
+    } finally {
+      socket.destroy();
+    }
   });
 });
