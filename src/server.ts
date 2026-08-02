@@ -62,7 +62,7 @@ function formatSections(sections?: string[]): string {
   return sections && sections.length > 0 ? sections.join(', ') : 'none';
 }
 
-function formatSearchResults(args: SearchArgs, results: SearchResult[]): string {
+export function formatSearchResults(args: SearchArgs, results: SearchResult[]): string {
   const lines = [
     '### Journal Search Results',
     '',
@@ -211,12 +211,16 @@ export class PrivateJournalServer {
     return this.search.listRecent(args);
   }
 
-  async run(): Promise<void> {
+  async initialize(): Promise<void> {
     await this.prepareData();
 
     await this.search.backfill().catch((error: unknown) => {
       console.error('[private-journal] backfill failed (best-effort):', error);
     });
+  }
+
+  async run(): Promise<void> {
+    await this.initialize();
 
     const server = new McpServer({ name: 'private-journal-mcp', version: '0.1.0' });
 
