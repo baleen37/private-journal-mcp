@@ -9,6 +9,23 @@ jest.mock('../src/server', () => {
   };
 });
 
+const mockWorkerListen = jest.fn().mockResolvedValue(undefined);
+
+jest.mock('../src/embedding-worker', () => ({
+  EmbeddingWorker: jest.fn().mockImplementation(() => ({ listen: mockWorkerListen })),
+}));
+
+const mockRuntimePaths = {
+  directory: '/runtime/private-journal',
+  socketPath: '/runtime/private-journal/embedding.sock',
+  startupLockPath: '/runtime/private-journal/embedding.startup.lock',
+  pidPath: '/runtime/private-journal/embedding.pid',
+};
+
+jest.mock('../src/embedding-runtime', () => ({
+  resolveEmbeddingRuntimePaths: jest.fn(() => mockRuntimePaths),
+}));
+
 const ensureRepo = jest.fn().mockResolvedValue(undefined);
 const pull = jest.fn().mockResolvedValue([]);
 const commitAndPush = jest.fn().mockResolvedValue([]);
@@ -51,6 +68,7 @@ jest.mock('../src/paths', () => ({
 }));
 
 import { GitSync } from '../src/git-sync';
+import { EmbeddingWorker } from '../src/embedding-worker';
 import { PrivateJournalServer } from '../src/server';
 import { runSync, main } from '../src/index';
 
@@ -160,7 +178,23 @@ describe('main', () => {
     resolveGitRemote.mockReset();
     resolveGitRemote.mockImplementation((remote?: string) => remote);
     (GitSync as jest.Mock).mockClear();
+    (EmbeddingWorker as jest.Mock).mockClear();
+    mockWorkerListen.mockClear();
     (PrivateJournalServer as jest.Mock).mockClear();
+  });
+
+  it('dispatches embedding-worker before sync or MCP startup', async () => {
+    await main(['node', 'index.js', 'embedding-worker']);
+
+    expect(EmbeddingWorker).toHaveBeenCalledWith({
+      runtimePaths: mockRuntimePaths,
+      idleMs: 0,
+    });
+    expect(mockWorkerListen).toHaveBeenCalledTimes(1);
+    expect(resolveDataPath).not.toHaveBeenCalled();
+    expect(mockMigrationsRun).not.toHaveBeenCalled();
+    expect(ensureRepo).not.toHaveBeenCalled();
+    expect(PrivateJournalServer).not.toHaveBeenCalled();
   });
 
   it('dispatches sync subcommand to runSync', async () => {

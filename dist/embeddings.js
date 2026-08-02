@@ -34,14 +34,19 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.EmbeddingService = void 0;
+exports.extractSearchableText = extractSearchableText;
 const fs = __importStar(require("fs/promises"));
-const paths_1 = require("./paths");
-const MODEL = 'Xenova/multilingual-e5-small';
-const LOAD_TIMEOUT_MS = 30_000;
+const embedding_broker_1 = require("./embedding-broker");
+function extractSearchableText(md) {
+    const withoutFm = md.replace(/^---\n[\s\S]*?\n---\n?/, '');
+    return withoutFm.replace(/^##\s+/gm, '').trim();
+}
 class EmbeddingService {
+    broker;
     static instance;
-    extractor = null;
-    loading = null;
+    constructor(broker = new embedding_broker_1.EmbeddingBroker()) {
+        this.broker = broker;
+    }
     static getInstance() {
         if (!EmbeddingService.instance)
             EmbeddingService.instance = new EmbeddingService();
@@ -59,14 +64,16 @@ class EmbeddingService {
         return dot / (Math.sqrt(na) * Math.sqrt(nb));
     }
     extractSearchableText(md) {
-        const withoutFm = md.replace(/^---\n[\s\S]*?\n---\n?/, '');
-        return withoutFm.replace(/^##\s+/gm, '').trim();
+        return extractSearchableText(md);
     }
     embeddingPathFor(mdPath) {
         return mdPath.replace(/\.md$/, '.embedding');
     }
     async saveEmbedding(mdPath, data) {
-        await fs.writeFile(this.embeddingPathFor(mdPath), JSON.stringify(data), 'utf8');
+        const target = this.embeddingPathFor(mdPath);
+        const temporary = `${target}.${process.pid}.${crypto.randomUUID()}.tmp`;
+        await fs.writeFile(temporary, JSON.stringify(data), { encoding: 'utf8', mode: 0o600 });
+        await fs.rename(temporary, target);
     }
     async loadEmbedding(mdPath) {
         try {
@@ -77,34 +84,8 @@ class EmbeddingService {
             return null;
         }
     }
-    async getExtractor() {
-        if (this.extractor)
-            return this.extractor;
-        if (!this.loading) {
-            this.loading = (async () => {
-                try {
-                    const { pipeline, env } = await Promise.resolve().then(() => __importStar(require('@huggingface/transformers')));
-                    env.cacheDir = (0, paths_1.resolveModelCachePath)();
-                    const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('embedding model load timed out')), LOAD_TIMEOUT_MS));
-                    this.extractor = await Promise.race([
-                        pipeline('feature-extraction', MODEL),
-                        timeout,
-                    ]);
-                    return this.extractor;
-                }
-                catch (e) {
-                    this.loading = null;
-                    throw e;
-                }
-            })();
-        }
-        return this.loading;
-    }
     async generateEmbedding(text, kind) {
-        const extractor = await this.getExtractor();
-        const prefixed = `${kind}: ${text}`;
-        const output = await extractor(prefixed, { pooling: 'mean', normalize: true });
-        return Array.from(output.data);
+        return this.broker.embedText(text, kind);
     }
 }
 exports.EmbeddingService = EmbeddingService;

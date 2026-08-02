@@ -30,6 +30,16 @@ describe('embeddingPathFor', () => {
   });
 });
 
+describe('generateEmbedding', () => {
+  it('delegates text and kind to the global embedding broker', async () => {
+    const embedText = jest.fn().mockResolvedValue([0.1, 0.2]);
+    const service = new EmbeddingService({ embedText } as any);
+
+    await expect(service.generateEmbedding('hello', 'query')).resolves.toEqual([0.1, 0.2]);
+    expect(embedText).toHaveBeenCalledWith('hello', 'query');
+  });
+});
+
 describe('save/loadEmbedding', () => {
   it('round-trips embedding data', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'emb-'));
