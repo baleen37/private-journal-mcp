@@ -15,4 +15,13 @@ describe('Claude plugin manifest', () => {
       CLAUDE_PLUGIN_OPTION_GIT_REMOTE: '${user_config.git_remote}',
     });
   });
+
+  it('declares the OpenCode server entrypoint without changing existing plugin manifests', () => {
+    const packagePath = path.join(__dirname, '..', 'package.json');
+    const packageJson = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
+
+    expect(packageJson.main).toBe('dist/index.js');
+    expect(packageJson.bin['private-journal-mcp']).toBe('./bin/private-journal-mcp');
+    expect(packageJson.exports['./server']).toBe('./opencode-plugin.mjs');
+  });
 });

@@ -92,6 +92,22 @@ Codex:
 codex plugin install /absolute/path/to/private-journal-mcp
 ```
 
+OpenCode:
+
+```bash
+# Published package
+opencode plugin private-journal-mcp --global
+
+# Local checkout after build
+npm install && npm run build
+opencode plugin /absolute/path/to/private-journal-mcp --global
+```
+
+The plugin exposes `write_journal`, `search_journal`, `read_journal`, and
+`list_journal` as native OpenCode tools. It uses the same local data path and
+Git remote environment variables as the MCP server. Set
+`PRIVATE_JOURNAL_GIT_REMOTE` for Git sync; leave it unset for local-only storage.
+
 ### Manual MCP registration (without the plugin)
 
 ```bash
