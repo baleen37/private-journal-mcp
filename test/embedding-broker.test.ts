@@ -119,6 +119,70 @@ describe('EmbeddingBroker', () => {
     await expect(fs.stat(runtimePaths.socketPath)).resolves.toBeDefined();
   });
 
+  it('starts the default worker as Bun when the host is a Bun standalone executable', async () => {
+    const runtimePaths = await makeRuntimePaths();
+    runtimeDirectories.push(runtimePaths.directory);
+    const originalBun = Object.getOwnPropertyDescriptor(process.versions, 'bun');
+    Object.defineProperty(process.versions, 'bun', {
+      configurable: true,
+      value: '1.3.13',
+    });
+    const workerLauncher = path.join(runtimePaths.directory, 'worker-launcher');
+    const capturedEnvPath = path.join(runtimePaths.directory, 'bun-be-bun');
+    await fs.writeFile(workerLauncher, `#!/bin/sh\nprintf '%s' \"$BUN_BE_BUN\" > ${capturedEnvPath}\n`);
+    await fs.chmod(workerLauncher, 0o700);
+    const originalExecPath = Object.getOwnPropertyDescriptor(process, 'execPath');
+    Object.defineProperty(process, 'execPath', { configurable: true, value: workerLauncher });
+    const broker = new EmbeddingBroker({
+      runtimePaths,
+      pollIntervalMs: 1,
+      startupTimeoutMs: 500,
+    });
+    brokers.push(broker);
+
+    try {
+      await expect(broker.status()).rejects.toThrow('timed out waiting for embedding worker socket');
+
+      await expect(fs.readFile(capturedEnvPath, 'utf8')).resolves.toBe('1');
+    } finally {
+      if (originalBun) Object.defineProperty(process.versions, 'bun', originalBun);
+      else delete (process.versions as NodeJS.ProcessVersions & { bun?: string }).bun;
+      if (originalExecPath) Object.defineProperty(process, 'execPath', originalExecPath);
+    }
+  });
+
+  it('keeps BUN_BE_BUN unset for a Node worker launch', async () => {
+    const runtimePaths = await makeRuntimePaths();
+    runtimeDirectories.push(runtimePaths.directory);
+    const originalBun = Object.getOwnPropertyDescriptor(process.versions, 'bun');
+    if (originalBun) delete (process.versions as NodeJS.ProcessVersions & { bun?: string }).bun;
+    const originalBunEnv = process.env.BUN_BE_BUN;
+    delete process.env.BUN_BE_BUN;
+    const workerLauncher = path.join(runtimePaths.directory, 'worker-launcher');
+    const capturedEnvPath = path.join(runtimePaths.directory, 'bun-be-bun');
+    await fs.writeFile(workerLauncher, `#!/bin/sh\nprintf '%s' \"$BUN_BE_BUN\" > ${capturedEnvPath}\n`);
+    await fs.chmod(workerLauncher, 0o700);
+    const originalExecPath = Object.getOwnPropertyDescriptor(process, 'execPath');
+    Object.defineProperty(process, 'execPath', { configurable: true, value: workerLauncher });
+    const broker = new EmbeddingBroker({
+      runtimePaths,
+      pollIntervalMs: 1,
+      startupTimeoutMs: 500,
+    });
+    brokers.push(broker);
+
+    try {
+      await expect(broker.status()).rejects.toThrow('timed out waiting for embedding worker socket');
+
+      await expect(fs.readFile(capturedEnvPath, 'utf8')).resolves.toBe('');
+    } finally {
+      if (originalBun) Object.defineProperty(process.versions, 'bun', originalBun);
+      if (originalBunEnv === undefined) delete process.env.BUN_BE_BUN;
+      else process.env.BUN_BE_BUN = originalBunEnv;
+      if (originalExecPath) Object.defineProperty(process, 'execPath', originalExecPath);
+    }
+  });
+
   it('lets only one broker reclaim a stale lock and spawn the worker', async () => {
     const runtimePaths = await makeRuntimePaths();
     runtimeDirectories.push(runtimePaths.directory);
