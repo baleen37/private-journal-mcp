@@ -348,6 +348,31 @@ describe('PrivateJournalServer handlers', () => {
     expect(connect).not.toHaveBeenCalled();
   });
 
+  it('initializes pull, migration, and embedding backfill before returning', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-init-'));
+    const srv = new PrivateJournalServer({ dataPath: dir, remote: 'resolved.git' });
+    const order: string[] = [];
+
+    jest.spyOn((srv as any).git, 'ensureRepo').mockImplementation(async () => {
+      order.push('ensureRepo');
+    });
+    jest.spyOn((srv as any).git, 'pull').mockImplementation(async () => {
+      order.push('pull');
+      return [];
+    });
+    mockMigrationsRun.mockImplementationOnce(async () => {
+      order.push('migration');
+    });
+    jest.spyOn(SearchService.prototype, 'backfill').mockImplementationOnce(async () => {
+      order.push('backfill');
+      return 0;
+    });
+
+    await (srv as any).initialize();
+
+    expect(order).toEqual(['ensureRepo', 'pull', 'migration', 'backfill']);
+  });
+
   it('run performs ensureRepo, pull, migration, and backfill before connect', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-'));
     const srv = new PrivateJournalServer({ dataPath: dir, remote: 'resolved.git' });

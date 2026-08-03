@@ -70,8 +70,10 @@ export class EmbeddingBroker {
       ?? resolveEmbeddingRuntimePaths(process.env, process.platform, uid);
     this.spawnWorker = options.spawnWorker ?? (() => {
       const workerEntry = path.join(__dirname, '..', 'dist', 'index.js');
+      const env = process.versions.bun ? { ...process.env, BUN_BE_BUN: '1' } : undefined;
       const child = spawn(process.execPath, [workerEntry, 'embedding-worker'], {
         detached: true,
+        ...(env ? { env } : {}),
         stdio: 'ignore',
       });
       child.unref();

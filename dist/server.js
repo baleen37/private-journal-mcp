@@ -34,6 +34,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.PrivateJournalServer = void 0;
+exports.formatSearchResults = formatSearchResults;
 const fs = __importStar(require("fs/promises"));
 const path = __importStar(require("path"));
 const mcp_js_1 = require("@modelcontextprotocol/sdk/server/mcp.js");
@@ -181,11 +182,14 @@ class PrivateJournalServer {
     async handleList(args) {
         return this.search.listRecent(args);
     }
-    async run() {
+    async initialize() {
         await this.prepareData();
         await this.search.backfill().catch((error) => {
             console.error('[private-journal] backfill failed (best-effort):', error);
         });
+    }
+    async run() {
+        await this.initialize();
         const server = new mcp_js_1.McpServer({ name: 'private-journal-mcp', version: '0.1.0' });
         const toText = (result) => ({
             content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
