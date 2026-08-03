@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { spawn } from 'child_process';
 import { EmbeddingWorker } from './embedding-worker';
 import { resolveEmbeddingRuntimePaths } from './embedding-runtime';
 import { EmbeddingService } from './embeddings';
@@ -41,7 +42,11 @@ export async function runSync(opts: { dataPath?: string; remote?: string } = {})
   });
 
   if (git.enabled) {
-    await git.commitAndPush(`journal sync: ${new Date().toISOString()}`, CURRENT_DATA_VERSION);
+    await git.commitAndPush(
+      `journal sync: ${new Date().toISOString()}`,
+      CURRENT_DATA_VERSION,
+      { remoteAlreadyPulled: git.lastPullCompleted },
+    );
   }
 }
 
@@ -53,6 +58,15 @@ export async function main(argv: string[]): Promise<void> {
       idleMs: 0,
     });
     await worker.listen();
+    return;
+  }
+
+  if (argv[2] === 'sync' && argv[3] === '--background') {
+    const child = spawn(process.execPath, [argv[1], 'sync'], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.unref();
     return;
   }
 

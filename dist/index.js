@@ -3,6 +3,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.runSync = runSync;
 exports.main = main;
+const child_process_1 = require("child_process");
 const embedding_worker_1 = require("./embedding-worker");
 const embedding_runtime_1 = require("./embedding-runtime");
 const embeddings_1 = require("./embeddings");
@@ -37,7 +38,7 @@ async function runSync(opts = {}) {
         console.error('[private-journal] backfill failed (best-effort):', error);
     });
     if (git.enabled) {
-        await git.commitAndPush(`journal sync: ${new Date().toISOString()}`, migrations_1.CURRENT_DATA_VERSION);
+        await git.commitAndPush(`journal sync: ${new Date().toISOString()}`, migrations_1.CURRENT_DATA_VERSION, { remoteAlreadyPulled: git.lastPullCompleted });
     }
 }
 async function main(argv) {
@@ -48,6 +49,14 @@ async function main(argv) {
             idleMs: 0,
         });
         await worker.listen();
+        return;
+    }
+    if (argv[2] === 'sync' && argv[3] === '--background') {
+        const child = (0, child_process_1.spawn)(process.execPath, [argv[1], 'sync'], {
+            detached: true,
+            stdio: 'ignore',
+        });
+        child.unref();
         return;
     }
     if (argv[2] === 'sync') {

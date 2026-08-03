@@ -64,11 +64,21 @@ export function chooseConflictWinner(oursMd: string, theirsMd: string): 'ours' |
   return theirs > ours ? 'theirs' : 'ours';
 }
 
+export interface CommitAndPushOptions {
+  remoteAlreadyPulled?: boolean;
+}
+
 export class GitSync {
+  private pullCompleted = false;
+
   constructor(private dataPath: string, private remote: string | undefined) {}
 
   get enabled(): boolean {
     return !!this.remote;
+  }
+
+  get lastPullCompleted(): boolean {
+    return this.pullCompleted;
   }
 
   private async git(args: string[]): Promise<{ stdout: string; stderr: string }> {
@@ -330,9 +340,13 @@ export class GitSync {
   // 무해하다(이미 임베딩이 있어 backfillPaths가 건너뛴다) — 이 반환값을
   // "원격 유래"로 해석하는 다른 용도에 쓰면 안 된다.
   async pull(supportedVersion: number = CURRENT_DATA_VERSION): Promise<string[]> {
+    this.pullCompleted = false;
     if (!this.enabled) return [];
     if (!(await this.hasGitDir())) return [];
-    return this.trackingChangedMarkdown(() => this.withLock(() => this.pullUnlocked(supportedVersion)));
+    return this.trackingChangedMarkdown(() => this.withLock(async () => {
+      this.pullCompleted = true;
+      await this.pullUnlocked(supportedVersion);
+    }));
   }
 
   async assertRemoteVersionSupported(supportedVersion: number): Promise<void> {
@@ -610,28 +624,36 @@ export class GitSync {
   async commitAndPush(
     message: string,
     supportedVersion: number = CURRENT_DATA_VERSION,
+    options: CommitAndPushOptions = {},
   ): Promise<string[]> {
     if (!this.enabled) return [];
     return this.trackingChangedMarkdown(() =>
-      this.withLock(() => this.commitAndPushUnlocked(message, supportedVersion)),
+      this.withLock(() => this.commitAndPushUnlocked(message, supportedVersion, options)),
     );
   }
 
-  private async commitAndPushUnlocked(message: string, supportedVersion: number): Promise<void> {
+  private async commitAndPushUnlocked(
+    message: string,
+    supportedVersion: number,
+    options: CommitAndPushOptions,
+  ): Promise<void> {
     await this.ensureRepo();
-    await this.assertRemoteVersionSupported(supportedVersion);
+    if (!options.remoteAlreadyPulled) {
+      await this.assertRemoteVersionSupported(supportedVersion);
+    }
     try {
       await this.recoverFromInterruptedRebase();
       await this.abortIfIndexUnmerged();
       await this.git(['add', '-A']);
       try {
-      await this.git(['commit', '-m', message]);
+        await this.git(['commit', '-m', message]);
       } catch (err) {
         if (isNothingToCommitError(err)) {
-          // 올릴 것이 없어도 받을 것은 있을 수 있다. 여기서 그냥 리턴하면
-          // 쓰기가 없는 기기(주로 읽기만 하는 기기)는 원격 변경을 영구히
-          // 받지 못한다. push 루프를 건너뛰되 pull은 반드시 한다.
-          await this.pullUnlocked(supportedVersion);
+          // 기본 경로에서는 올릴 것이 없어도 원격 변경을 받을 수 있어야 한다.
+          // 호출자가 같은 sync에서 이미 pull을 끝낸 경우에는 중복 fetch를 피한다.
+          if (!options.remoteAlreadyPulled) {
+            await this.pullUnlocked(supportedVersion);
+          }
           return;
         }
         logGitFailure('[private-journal] git commit failed (best-effort):', err);
