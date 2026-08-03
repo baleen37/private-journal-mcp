@@ -108,7 +108,7 @@ Local checkout:
 ```bash
 npm install && npm run build
 mkdir -p .opencode/plugins
-ln -sfn "$(pwd)/opencode-plugin.mjs" .opencode/plugins/private-journal-mcp.mjs
+ln -sfn "$(pwd)/opencode-plugin.mjs" .opencode/plugins/private-journal-mcp.js
 ```
 
 The symlink keeps the plugin's relative `dist/` import rooted at the checkout.

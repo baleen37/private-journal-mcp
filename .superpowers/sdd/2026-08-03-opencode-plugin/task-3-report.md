@@ -41,3 +41,24 @@
 ### 우려사항
 
 - 없음. OpenCode 공식 plugin 문서의 npm config 및 local plugin directory 방식에 맞췄습니다.
+
+## Fix round 2: OpenCode local plugin filename discovery 반영
+
+### 변경
+
+- README local checkout symlink destination을 `private-journal-mcp.js`로 변경
+- Task 3 local example과 Task 4 isolated smoke 예시의 symlink destination을
+  `private-journal-mcp.js`로 변경
+- symlink target `opencode-plugin.mjs`, plugin source, package export는 유지
+
+### 검증
+
+- `npx jest --runInBand --runTestsByPath test/plugin-manifest.test.ts test/bin-launcher.test.ts`
+  - PASS: 2 suites, 3 tests
+- `git diff --check -- README.md docs/superpowers/plans/2026-08-03-opencode-plugin.md`
+  - PASS: 두 문서 diff clean
+
+### 우려사항
+
+- 없음. OpenCode 1.18.3 isolated experiment에서 `.mjs` filename은 발견되지 않고
+  `.js` symlink filename은 네 native journal tool을 모두 노출한 확인 결과를 문서 예시에 반영했습니다.

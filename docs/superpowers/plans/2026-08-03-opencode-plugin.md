@@ -402,7 +402,7 @@ plugin directory so OpenCode loads it automatically:
 npm install && npm run build
 mkdir -p .opencode/plugins
 ln -sfn /absolute/path/to/private-journal-mcp/opencode-plugin.mjs \
-  .opencode/plugins/private-journal-mcp.mjs
+  .opencode/plugins/private-journal-mcp.js
 ~~~
 
 The plugin exposes `write_journal`, `search_journal`, `read_journal`, and
@@ -482,7 +482,7 @@ journal_root="$tmp_root/journal"
 mkdir -p "$config_root/opencode/plugins" "$cache_root" "$journal_root"
 
 ln -s "$PWD/opencode-plugin.mjs" \
-  "$config_root/opencode/plugins/private-journal-mcp.mjs"
+  "$config_root/opencode/plugins/private-journal-mcp.js"
 ~~~
 
 Expected: isolated global OpenCode plugin directory에 repository entrypoint가 연결된다. OpenCode가 이 directory의 plugin을 startup 시 자동 로드한다.
