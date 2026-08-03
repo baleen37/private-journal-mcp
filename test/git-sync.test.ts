@@ -721,6 +721,60 @@ describe('GitSync pull-only machines', () => {
       .catch(() => false);
     expect(arrived).toBe(true);
   }, 30000);
+
+  it('does not pull again when the caller already pulled before a no-op commit', async () => {
+    const { base, remote, branch } = await createSeedRemote('gs-pullonly-reused-');
+    const seed = path.join(base, 'seed');
+    const dir = path.join(base, 'local');
+    await fs.writeFile(path.join(seed, '.gitattributes'), '*.embedding binary\n', 'utf8');
+    await run('git', ['add', '-A'], { cwd: seed });
+    await run('git', ['commit', '-m', 'add gitattributes'], { cwd: seed });
+    await run('git', ['push', '-q', 'origin', branch], { cwd: seed });
+    await run('git', ['clone', remote, dir]);
+    await configureGitIdentity(dir);
+
+    const gs = new GitSync(dir, remote);
+    await gs.pull(1);
+
+    await fs.writeFile(path.join(seed, 'from-peer.md'), md(701, 'peer entry'), 'utf8');
+    await run('git', ['add', '-A'], { cwd: seed });
+    await run('git', ['commit', '-m', 'peer adds an entry'], { cwd: seed });
+    await run('git', ['push', '-q', 'origin', branch], { cwd: seed });
+
+    await gs.commitAndPush('nothing after initial pull', 1, { remoteAlreadyPulled: true });
+
+    await expect(fs.access(path.join(dir, 'from-peer.md'))).rejects.toBeDefined();
+  }, 30000);
+
+  it('still pulls before pushing a local commit when the caller already pulled', async () => {
+    const { base, remote, branch } = await createSeedRemote('gs-push-reused-');
+    const seed = path.join(base, 'seed');
+    const dir = path.join(base, 'local');
+    const peer = path.join(base, 'peer');
+    await fs.writeFile(path.join(seed, '.gitattributes'), '*.embedding binary\n', 'utf8');
+    await run('git', ['add', '-A'], { cwd: seed });
+    await run('git', ['commit', '-m', 'add gitattributes'], { cwd: seed });
+    await run('git', ['push', '-q', 'origin', branch], { cwd: seed });
+    await Promise.all([run('git', ['clone', remote, dir]), run('git', ['clone', remote, peer])]);
+    await configureGitIdentity(dir);
+    await configureGitIdentity(peer);
+
+    const gs = new GitSync(dir, remote);
+    await gs.pull(1);
+
+    await fs.writeFile(path.join(peer, 'from-peer.md'), md(702, 'peer entry'), 'utf8');
+    await run('git', ['add', '-A'], { cwd: peer });
+    await run('git', ['commit', '-m', 'peer adds an entry'], { cwd: peer });
+    await run('git', ['push', '-q', 'origin', branch], { cwd: peer });
+    await fs.writeFile(path.join(dir, 'from-local.md'), md(703, 'local entry'), 'utf8');
+
+    await gs.commitAndPush('local entry after initial pull', 1, { remoteAlreadyPulled: true });
+
+    const verify = path.join(base, 'verify');
+    await run('git', ['clone', remote, verify]);
+    await expect(fs.access(path.join(verify, 'from-peer.md'))).resolves.toBeUndefined();
+    await expect(fs.access(path.join(verify, 'from-local.md'))).resolves.toBeUndefined();
+  }, 30000);
 });
 
 describe('GitSync empty remote', () => {
@@ -876,6 +930,23 @@ describe('GitSync unmerged index protection', () => {
 });
 
 describe('GitSync file lock', () => {
+  it('does not report a completed pull when another sync holds the lock', async () => {
+    const { base, remote } = await createSeedRemote('gs-pull-lock-state-');
+    const dir = path.join(base, 'local');
+    const gs = new GitSync(dir, remote);
+    await gs.ensureRepo();
+    await configureGitIdentity(dir);
+    await fs.writeFile(
+      path.join(dir, '.private-journal-sync.lock'),
+      JSON.stringify({ pid: 999999, acquiredAt: Date.now() }),
+      'utf8',
+    );
+
+    await gs.pull();
+
+    expect(gs.lastPullCompleted).toBe(false);
+  }, 30000);
+
   it('skips sync when the lock is already held', async () => {
     const { base, remote } = await createSeedRemote('gs-lock-');
     const dir = path.join(base, 'local');

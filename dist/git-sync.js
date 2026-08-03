@@ -94,12 +94,16 @@ function chooseConflictWinner(oursMd, theirsMd) {
 class GitSync {
     dataPath;
     remote;
+    pullCompleted = false;
     constructor(dataPath, remote) {
         this.dataPath = dataPath;
         this.remote = remote;
     }
     get enabled() {
         return !!this.remote;
+    }
+    get lastPullCompleted() {
+        return this.pullCompleted;
     }
     async git(args) {
         return run('git', args, { cwd: this.dataPath, env: gitEnv });
@@ -359,11 +363,15 @@ class GitSync {
     // 무해하다(이미 임베딩이 있어 backfillPaths가 건너뛴다) — 이 반환값을
     // "원격 유래"로 해석하는 다른 용도에 쓰면 안 된다.
     async pull(supportedVersion = migrations_1.CURRENT_DATA_VERSION) {
+        this.pullCompleted = false;
         if (!this.enabled)
             return [];
         if (!(await this.hasGitDir()))
             return [];
-        return this.trackingChangedMarkdown(() => this.withLock(() => this.pullUnlocked(supportedVersion)));
+        return this.trackingChangedMarkdown(() => this.withLock(async () => {
+            this.pullCompleted = true;
+            await this.pullUnlocked(supportedVersion);
+        }));
     }
     async assertRemoteVersionSupported(supportedVersion) {
         const branch = await this.currentBranch();
@@ -645,14 +653,16 @@ class GitSync {
     }
     // pull()과 동일하게, 동기화로 추가/수정된 md 경로를 돌려준다(로컬 커밋분
     // 포함). 동기화가 스킵되거나(록 경합) HEAD가 그대로면 빈 배열이다.
-    async commitAndPush(message, supportedVersion = migrations_1.CURRENT_DATA_VERSION) {
+    async commitAndPush(message, supportedVersion = migrations_1.CURRENT_DATA_VERSION, options = {}) {
         if (!this.enabled)
             return [];
-        return this.trackingChangedMarkdown(() => this.withLock(() => this.commitAndPushUnlocked(message, supportedVersion)));
+        return this.trackingChangedMarkdown(() => this.withLock(() => this.commitAndPushUnlocked(message, supportedVersion, options)));
     }
-    async commitAndPushUnlocked(message, supportedVersion) {
+    async commitAndPushUnlocked(message, supportedVersion, options) {
         await this.ensureRepo();
-        await this.assertRemoteVersionSupported(supportedVersion);
+        if (!options.remoteAlreadyPulled) {
+            await this.assertRemoteVersionSupported(supportedVersion);
+        }
         try {
             await this.recoverFromInterruptedRebase();
             await this.abortIfIndexUnmerged();
@@ -662,10 +672,11 @@ class GitSync {
             }
             catch (err) {
                 if (isNothingToCommitError(err)) {
-                    // 올릴 것이 없어도 받을 것은 있을 수 있다. 여기서 그냥 리턴하면
-                    // 쓰기가 없는 기기(주로 읽기만 하는 기기)는 원격 변경을 영구히
-                    // 받지 못한다. push 루프를 건너뛰되 pull은 반드시 한다.
-                    await this.pullUnlocked(supportedVersion);
+                    // 기본 경로에서는 올릴 것이 없어도 원격 변경을 받을 수 있어야 한다.
+                    // 호출자가 같은 sync에서 이미 pull을 끝낸 경우에는 중복 fetch를 피한다.
+                    if (!options.remoteAlreadyPulled) {
+                        await this.pullUnlocked(supportedVersion);
+                    }
                     return;
                 }
                 logGitFailure('[private-journal] git commit failed (best-effort):', err);

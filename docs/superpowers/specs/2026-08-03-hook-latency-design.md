@@ -21,7 +21,9 @@ background process.
 ## Design
 
 `runSync()` will call `GitSync.commitAndPush()` with an explicit
-`remoteAlreadyPulled` option after its initial `pull()`. In that mode,
+`remoteAlreadyPulled` option after its initial `pull()`. `GitSync` records
+whether that pull acquired the sync lock, so a concurrent run that skipped
+the pull does not incorrectly suppress its own catch-up fetch. In that mode,
 `commitAndPush` skips its pre-commit remote version fetch. If the commit is a
 no-op, it returns immediately because the caller has already pulled. If a
 local commit exists, it retains the existing pull-before-push loop so concurrent

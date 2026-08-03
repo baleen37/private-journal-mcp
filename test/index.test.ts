@@ -2,6 +2,10 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 
+const mockSpawn = jest.fn();
+
+jest.mock('child_process', () => ({ spawn: mockSpawn }));
+
 jest.mock('../src/server', () => {
   const run = jest.fn().mockResolvedValue(undefined);
   return {
@@ -29,10 +33,12 @@ jest.mock('../src/embedding-runtime', () => ({
 const ensureRepo = jest.fn().mockResolvedValue(undefined);
 const pull = jest.fn().mockResolvedValue([]);
 const commitAndPush = jest.fn().mockResolvedValue([]);
+const lastPullCompleted = { value: true };
 
 jest.mock('../src/git-sync', () => ({
   GitSync: jest.fn().mockImplementation((_dataPath: string, remote?: string) => ({
     enabled: !!remote,
+    lastPullCompleted: lastPullCompleted.value,
     ensureRepo,
     pull,
     commitAndPush,
@@ -163,6 +169,11 @@ describe('runSync', () => {
 
     expect(pull.mock.invocationCallOrder[0]).toBeLessThan(mockMigrationsRun.mock.invocationCallOrder[0]);
     expect(mockMigrationsRun.mock.invocationCallOrder[0]).toBeLessThan(commitAndPush.mock.invocationCallOrder[0]);
+    expect(commitAndPush).toHaveBeenCalledWith(
+      expect.any(String),
+      1,
+      { remoteAlreadyPulled: true },
+    );
   });
 });
 
@@ -181,6 +192,7 @@ describe('main', () => {
     (EmbeddingWorker as jest.Mock).mockClear();
     mockWorkerListen.mockClear();
     (PrivateJournalServer as jest.Mock).mockClear();
+    mockSpawn.mockReset();
   });
 
   it('dispatches embedding-worker before sync or MCP startup', async () => {
@@ -203,6 +215,22 @@ describe('main', () => {
     expect(resolveDataPath).toHaveBeenCalledTimes(1);
     expect(ensureRepo).not.toHaveBeenCalled();
     expect(PrivateJournalServer).not.toHaveBeenCalled();
+  });
+
+  it('detaches background sync without running it in the parent', async () => {
+    const unref = jest.fn();
+    mockSpawn.mockReturnValue({ unref });
+
+    await main(['node', 'index.js', 'sync', '--background']);
+
+    expect(mockSpawn).toHaveBeenCalledWith(
+      process.execPath,
+      ['index.js', 'sync'],
+      { detached: true, stdio: 'ignore' },
+    );
+    expect(unref).toHaveBeenCalledTimes(1);
+    expect(resolveDataPath).not.toHaveBeenCalled();
+    expect(ensureRepo).not.toHaveBeenCalled();
   });
 
   it('runs the server by default', async () => {

@@ -194,6 +194,10 @@ When installed as a plugin, the SessionStart sync hook is registered automatical
 (see `hooks/hooks.json`) — nothing to configure. Without a configured remote it
 still runs local data migrations and embedding backfill.
 
+The hook uses `sync --background`, so SessionStart returns immediately while the
+existing sync process continues in the background. To run the same sync in the
+foreground, use `node dist/index.js sync`.
+
 To wire it up manually instead, add to `~/.claude/settings.json`:
 
 ```json
@@ -204,7 +208,7 @@ To wire it up manually instead, add to `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "node /absolute/path/to/private-journal-mcp/dist/index.js sync"
+            "command": "node /absolute/path/to/private-journal-mcp/dist/index.js sync --background"
           }
         ]
       }
