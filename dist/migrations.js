@@ -34,6 +34,8 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MigrationManager = exports.DataVersionError = exports.MIGRATION_TRANSACTION_FILENAME = exports.DATA_VERSION_FILENAME = exports.CURRENT_DATA_VERSION = void 0;
+exports.validateRevisionMigrations = validateRevisionMigrations;
+exports.runRevisionMigrations = runRevisionMigrations;
 const fs = __importStar(require("fs/promises"));
 const path = __importStar(require("path"));
 exports.CURRENT_DATA_VERSION = 1;
@@ -47,6 +49,35 @@ class DataVersionError extends Error {
     }
 }
 exports.DataVersionError = DataVersionError;
+function validateRevisionMigrations(migrations, minimumFrom = 0) {
+    const seen = new Set();
+    for (const migration of migrations) {
+        if (!Number.isInteger(migration.from)
+            || !Number.isInteger(migration.to)
+            || migration.from < minimumFrom
+            || migration.to !== migration.from + 1
+            || seen.has(migration.from)) {
+            throw new DataVersionError('Revision migrations must be unique consecutive transitions');
+        }
+        seen.add(migration.from);
+    }
+}
+async function runRevisionMigrations(currentRevision, targetRevision, migrations, context) {
+    validateRevisionMigrations(migrations);
+    if (currentRevision > targetRevision) {
+        throw new DataVersionError(`Revision ${currentRevision} is newer than this app supports (${targetRevision})`);
+    }
+    let revision = currentRevision;
+    while (revision < targetRevision) {
+        const migration = migrations.find((candidate) => candidate.from === revision);
+        if (!migration || migration.to !== revision + 1) {
+            throw new DataVersionError(`Missing consecutive migration for ${revision} -> ${revision + 1}`);
+        }
+        await migration.apply(context);
+        revision = migration.to;
+    }
+    return revision;
+}
 class MigrationManager {
     dataPath;
     migrations;
@@ -89,7 +120,7 @@ class MigrationManager {
         if (!Number.isInteger(this.currentVersion) || this.currentVersion <= 0) {
             throw new DataVersionError('Current data version must be a positive integer');
         }
-        this.validateRegistry();
+        validateRevisionMigrations(this.migrations, 1);
         const hasVersionFile = await this.hasVersionFile();
         const version = await this.readVersion();
         if (version > this.currentVersion) {
@@ -104,12 +135,17 @@ class MigrationManager {
         try {
             const invalidatedMarkdownPaths = new Set();
             let invalidateAllEmbeddings = false;
-            for (const migration of this.migrationSequence(version)) {
-                const result = await migration.apply(stagePath);
-                const paths = this.validateMigrationResult(result, stagePath);
-                paths.forEach((markdownPath) => invalidatedMarkdownPaths.add(markdownPath));
-                invalidateAllEmbeddings ||= result.invalidateAllEmbeddings === true;
-            }
+            const revisionMigrations = this.migrations.map((migration) => ({
+                from: migration.from,
+                to: migration.to,
+                apply: async ({ stagePath: migrationStagePath }) => {
+                    const result = await migration.apply(migrationStagePath);
+                    const paths = this.validateMigrationResult(result, migrationStagePath);
+                    paths.forEach((markdownPath) => invalidatedMarkdownPaths.add(markdownPath));
+                    invalidateAllEmbeddings ||= result.invalidateAllEmbeddings === true;
+                },
+            }));
+            await runRevisionMigrations(version, this.currentVersion, revisionMigrations, { stagePath });
             for (const markdownPath of invalidatedMarkdownPaths) {
                 await fs.rm(path.join(stagePath, markdownPath.replace(/\.md$/, '.embedding')), { force: true });
             }
@@ -128,35 +164,6 @@ class MigrationManager {
     }
     transactionPath() {
         return path.join(path.dirname(this.dataRootPath()), exports.MIGRATION_TRANSACTION_FILENAME);
-    }
-    validateRegistry() {
-        const fromVersions = new Set();
-        for (const migration of this.migrations) {
-            if (!Number.isInteger(migration.from)
-                || !Number.isInteger(migration.to)
-                || migration.from <= 0
-                || migration.to <= 0
-                || migration.to !== migration.from + 1) {
-                throw new DataVersionError('Migration registry entries must be consecutive positive integer versions');
-            }
-            if (fromVersions.has(migration.from)) {
-                throw new DataVersionError(`Migration registry has duplicate from version ${migration.from}`);
-            }
-            fromVersions.add(migration.from);
-        }
-    }
-    migrationSequence(version) {
-        const sequence = [];
-        let nextVersion = version;
-        while (nextVersion < this.currentVersion) {
-            const matches = this.migrations.filter((migration) => migration.from === nextVersion);
-            if (matches.length !== 1 || matches[0].to !== nextVersion + 1) {
-                throw new DataVersionError(`Missing consecutive migration for ${nextVersion} -> ${nextVersion + 1}`);
-            }
-            sequence.push(matches[0]);
-            nextVersion = matches[0].to;
-        }
-        return sequence;
     }
     async createStage() {
         const dataPath = this.dataRootPath();

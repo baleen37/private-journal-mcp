@@ -6,7 +6,7 @@ const { resolve } = require('path');
 const { spawnSync } = require('child_process');
 
 const pluginRoot = resolve(__dirname, '..');
-const runtimeDeps = ['@modelcontextprotocol/sdk', '@huggingface/transformers', 'zod'];
+const runtimeDeps = ['@modelcontextprotocol/sdk', '@huggingface/transformers', 'zod', 'sqlite-vec'];
 
 function hasRuntimeDeps() {
   return runtimeDeps.every((dep) => existsSync(resolve(pluginRoot, 'node_modules', dep)));

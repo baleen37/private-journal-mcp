@@ -32,6 +32,60 @@ export interface Migration {
   apply(stagePath: string): Promise<MigrationResult>;
 }
 
+/**
+ * 공통 revision 실행 계약이다. 실제 atomic commit은 대상 저장소가 담당한다.
+ * 폴더 migration은 stage 디렉터리, SQLite migration은 임시 DB를 사용한다.
+ */
+export interface RevisionMigration<TContext, TResult = void> {
+  from: number;
+  to: number;
+  apply(context: TContext): Promise<TResult>;
+}
+
+export function validateRevisionMigrations<TContext, TResult>(
+  migrations: RevisionMigration<TContext, TResult>[],
+  minimumFrom = 0,
+): void {
+  const seen = new Set<number>();
+  for (const migration of migrations) {
+    if (
+      !Number.isInteger(migration.from)
+      || !Number.isInteger(migration.to)
+      || migration.from < minimumFrom
+      || migration.to !== migration.from + 1
+      || seen.has(migration.from)
+    ) {
+      throw new DataVersionError('Revision migrations must be unique consecutive transitions');
+    }
+    seen.add(migration.from);
+  }
+}
+
+export async function runRevisionMigrations<TContext>(
+  currentRevision: number,
+  targetRevision: number,
+  migrations: RevisionMigration<TContext, unknown>[],
+  context: TContext,
+): Promise<number> {
+  validateRevisionMigrations(migrations);
+  if (currentRevision > targetRevision) {
+    throw new DataVersionError(
+      `Revision ${currentRevision} is newer than this app supports (${targetRevision})`,
+    );
+  }
+
+  let revision = currentRevision;
+  while (revision < targetRevision) {
+    const migration = migrations.find((candidate) => candidate.from === revision);
+    if (!migration || migration.to !== revision + 1) {
+      throw new DataVersionError(`Missing consecutive migration for ${revision} -> ${revision + 1}`);
+    }
+    await migration.apply(context);
+    revision = migration.to;
+  }
+  return revision;
+}
+
 export class MigrationManager {
   constructor(
     private readonly dataPath: string,
@@ -77,7 +131,7 @@ export class MigrationManager {
     if (!Number.isInteger(this.currentVersion) || this.currentVersion <= 0) {
       throw new DataVersionError('Current data version must be a positive integer');
     }
-    this.validateRegistry();
+    validateRevisionMigrations(this.migrations, 1);
 
     const hasVersionFile = await this.hasVersionFile();
     const version = await this.readVersion();
@@ -96,12 +150,17 @@ export class MigrationManager {
     try {
       const invalidatedMarkdownPaths = new Set<string>();
       let invalidateAllEmbeddings = false;
-      for (const migration of this.migrationSequence(version)) {
-        const result = await migration.apply(stagePath);
-        const paths = this.validateMigrationResult(result, stagePath);
-        paths.forEach((markdownPath) => invalidatedMarkdownPaths.add(markdownPath));
-        invalidateAllEmbeddings ||= result.invalidateAllEmbeddings === true;
-      }
+      const revisionMigrations: RevisionMigration<{ stagePath: string }>[] = this.migrations.map((migration) => ({
+        from: migration.from,
+        to: migration.to,
+        apply: async ({ stagePath: migrationStagePath }) => {
+          const result = await migration.apply(migrationStagePath);
+          const paths = this.validateMigrationResult(result, migrationStagePath);
+          paths.forEach((markdownPath) => invalidatedMarkdownPaths.add(markdownPath));
+          invalidateAllEmbeddings ||= result.invalidateAllEmbeddings === true;
+        },
+      }));
+      await runRevisionMigrations(version, this.currentVersion, revisionMigrations, { stagePath });
       for (const markdownPath of invalidatedMarkdownPaths) {
         await fs.rm(path.join(stagePath, markdownPath.replace(/\.md$/, '.embedding')), { force: true });
       }
@@ -121,42 +180,6 @@ export class MigrationManager {
 
   private transactionPath(): string {
     return path.join(path.dirname(this.dataRootPath()), MIGRATION_TRANSACTION_FILENAME);
-  }
-
-  private validateRegistry(): void {
-    const fromVersions = new Set<number>();
-
-    for (const migration of this.migrations) {
-      if (
-        !Number.isInteger(migration.from)
-        || !Number.isInteger(migration.to)
-        || migration.from <= 0
-        || migration.to <= 0
-        || migration.to !== migration.from + 1
-      ) {
-        throw new DataVersionError('Migration registry entries must be consecutive positive integer versions');
-      }
-      if (fromVersions.has(migration.from)) {
-        throw new DataVersionError(`Migration registry has duplicate from version ${migration.from}`);
-      }
-      fromVersions.add(migration.from);
-    }
-  }
-
-  private migrationSequence(version: number): Migration[] {
-    const sequence: Migration[] = [];
-    let nextVersion = version;
-
-    while (nextVersion < this.currentVersion) {
-      const matches = this.migrations.filter((migration) => migration.from === nextVersion);
-      if (matches.length !== 1 || matches[0].to !== nextVersion + 1) {
-        throw new DataVersionError(`Missing consecutive migration for ${nextVersion} -> ${nextVersion + 1}`);
-      }
-      sequence.push(matches[0]);
-      nextVersion = matches[0].to;
-    }
-
-    return sequence;
   }
 
   private async createStage(): Promise<string> {

@@ -44,7 +44,8 @@ const embedding_protocol_1 = require("./embedding-protocol");
 class EmbeddingWorker {
     engine;
     runtimePaths;
-    queue = [];
+    interactiveQueue = [];
+    backgroundQueue = [];
     server = null;
     active = false;
     draining = false;
@@ -81,7 +82,7 @@ class EmbeddingWorker {
     async handle(request) {
         if (request.type === 'status')
             return { id: request.id, active: this.active };
-        const embedding = await this.enqueue(() => this.engine.embed(request.text, request.kind));
+        const embedding = await this.enqueue(() => this.engine.embed(request.text, request.kind), request.kind === 'query' ? 'interactive' : 'background');
         return { id: request.id, embedding };
     }
     accept(socket) {
@@ -128,9 +129,10 @@ class EmbeddingWorker {
         }
         return null;
     }
-    enqueue(run) {
+    enqueue(run, priority) {
         return new Promise((resolve, reject) => {
-            this.queue.push({ run, resolve: resolve, reject });
+            const queue = priority === 'interactive' ? this.interactiveQueue : this.backgroundQueue;
+            queue.push({ run, resolve: resolve, reject });
             void this.drain();
         });
     }
@@ -140,7 +142,7 @@ class EmbeddingWorker {
         this.draining = true;
         try {
             while (true) {
-                const job = this.queue.shift();
+                const job = this.interactiveQueue.shift() ?? this.backgroundQueue.shift();
                 if (!job)
                     return;
                 this.active = true;
@@ -157,7 +159,7 @@ class EmbeddingWorker {
         }
         finally {
             this.draining = false;
-            if (this.queue.length)
+            if (this.interactiveQueue.length || this.backgroundQueue.length)
                 void this.drain();
         }
     }

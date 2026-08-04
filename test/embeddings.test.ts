@@ -1,7 +1,4 @@
 import { EmbeddingService } from '../src/embeddings';
-import * as fs from 'fs/promises';
-import * as path from 'path';
-import * as os from 'os';
 
 const svc = EmbeddingService.getInstance();
 
@@ -24,12 +21,6 @@ describe('extractSearchableText', () => {
   });
 });
 
-describe('embeddingPathFor', () => {
-  it('swaps .md for .embedding', () => {
-    expect(svc.embeddingPathFor('/a/b/c.md')).toBe('/a/b/c.embedding');
-  });
-});
-
 describe('generateEmbedding', () => {
   it('delegates text and kind to the global embedding broker', async () => {
     const embedText = jest.fn().mockResolvedValue([0.1, 0.2]);
@@ -37,27 +28,5 @@ describe('generateEmbedding', () => {
 
     await expect(service.generateEmbedding('hello', 'query')).resolves.toEqual([0.1, 0.2]);
     expect(embedText).toHaveBeenCalledWith('hello', 'query');
-  });
-});
-
-describe('save/loadEmbedding', () => {
-  it('round-trips embedding data', async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'emb-'));
-    const mdPath = path.join(dir, 'x.md');
-    const data = { embedding: [0.1, 0.2], text: 't', sections: ['reflections'], timestamp: 5, path: mdPath };
-    await svc.saveEmbedding(mdPath, data);
-    const loaded = await svc.loadEmbedding(mdPath);
-    expect(loaded).toEqual(data);
-  });
-  it('returns null when embedding file missing', async () => {
-    expect(await svc.loadEmbedding('/no/such/file.md')).toBeNull();
-  });
-  it('returns null when embedding file contains invalid JSON', async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'emb-'));
-    const mdPath = path.join(dir, 'corrupt.md');
-    const embPath = mdPath.replace(/\.md$/, '.embedding');
-    await fs.writeFile(embPath, 'not valid json {]', 'utf8');
-    const loaded = await svc.loadEmbedding(mdPath);
-    expect(loaded).toBeNull();
   });
 });

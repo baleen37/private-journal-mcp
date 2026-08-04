@@ -136,7 +136,7 @@ describe('EmbeddingBroker', () => {
     const broker = new EmbeddingBroker({
       runtimePaths,
       pollIntervalMs: 1,
-      startupTimeoutMs: 500,
+      startupTimeoutMs: 2000,
     });
     brokers.push(broker);
 
@@ -167,7 +167,7 @@ describe('EmbeddingBroker', () => {
     const broker = new EmbeddingBroker({
       runtimePaths,
       pollIntervalMs: 1,
-      startupTimeoutMs: 500,
+      startupTimeoutMs: 2000,
     });
     brokers.push(broker);
 

@@ -95,10 +95,8 @@ function buildEntryRelPath(when) {
 }
 class JournalManager {
     dataPath;
-    embeddings;
-    constructor(dataPath, embeddings) {
+    constructor(dataPath, _embeddings) {
         this.dataPath = dataPath;
-        this.embeddings = embeddings;
     }
     hasContent(sections) {
         return types_1.JOURNAL_SECTIONS.some((section) => {
@@ -112,22 +110,6 @@ class JournalManager {
         await fs.mkdir(path.dirname(mdPath), { recursive: true });
         const md = renderEntry(sections, when);
         await fs.writeFile(mdPath, md, 'utf8');
-        try {
-            const presentSections = parseSections(md);
-            const text = this.embeddings.extractSearchableText(md);
-            const vector = await this.embeddings.generateEmbedding(text, 'passage');
-            const data = {
-                embedding: vector,
-                text,
-                sections: presentSections,
-                timestamp: when.getTime(),
-                path: mdPath,
-            };
-            await this.embeddings.saveEmbedding(mdPath, data);
-        }
-        catch (err) {
-            console.error('[private-journal] embedding generation failed:', err);
-        }
         return mdPath;
     }
 }

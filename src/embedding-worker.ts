@@ -44,7 +44,8 @@ interface QueuedJob<T> {
 export class EmbeddingWorker {
   private readonly engine: WorkerEngine;
   private readonly runtimePaths: Pick<EmbeddingRuntimePaths, 'socketPath'>;
-  private readonly queue: QueuedJob<unknown>[] = [];
+  private readonly interactiveQueue: QueuedJob<unknown>[] = [];
+  private readonly backgroundQueue: QueuedJob<unknown>[] = [];
   private server: net.Server | null = null;
   private active = false;
   private draining = false;
@@ -82,7 +83,10 @@ export class EmbeddingWorker {
 
   async handle(request: WorkerRequest): Promise<WorkerResponse> {
     if (request.type === 'status') return { id: request.id, active: this.active };
-    const embedding = await this.enqueue(() => this.engine.embed(request.text, request.kind));
+    const embedding = await this.enqueue(
+      () => this.engine.embed(request.text, request.kind),
+      request.kind === 'query' ? 'interactive' : 'background',
+    );
     return { id: request.id, embedding };
   }
 
@@ -127,9 +131,10 @@ export class EmbeddingWorker {
     return null;
   }
 
-  private enqueue<T>(run: () => Promise<T>): Promise<T> {
+  private enqueue<T>(run: () => Promise<T>, priority: 'interactive' | 'background'): Promise<T> {
     return new Promise<T>((resolve, reject) => {
-      this.queue.push({ run, resolve: resolve as (value: unknown) => void, reject });
+      const queue = priority === 'interactive' ? this.interactiveQueue : this.backgroundQueue;
+      queue.push({ run, resolve: resolve as (value: unknown) => void, reject });
       void this.drain();
     });
   }
@@ -139,7 +144,7 @@ export class EmbeddingWorker {
     this.draining = true;
     try {
       while (true) {
-        const job = this.queue.shift();
+        const job = this.interactiveQueue.shift() ?? this.backgroundQueue.shift();
         if (!job) return;
         this.active = true;
         try {
@@ -152,7 +157,7 @@ export class EmbeddingWorker {
       }
     } finally {
       this.draining = false;
-      if (this.queue.length) void this.drain();
+      if (this.interactiveQueue.length || this.backgroundQueue.length) void this.drain();
     }
   }
 }

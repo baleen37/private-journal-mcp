@@ -1,5 +1,3 @@
-import * as fs from 'fs/promises';
-import { EmbeddingData } from './types';
 import { EmbeddingBroker } from './embedding-broker';
 
 interface EmbeddingClient {
@@ -34,26 +32,6 @@ export class EmbeddingService {
 
   extractSearchableText(md: string): string {
     return extractSearchableText(md);
-  }
-
-  embeddingPathFor(mdPath: string): string {
-    return mdPath.replace(/\.md$/, '.embedding');
-  }
-
-  async saveEmbedding(mdPath: string, data: EmbeddingData): Promise<void> {
-    const target = this.embeddingPathFor(mdPath);
-    const temporary = `${target}.${process.pid}.${crypto.randomUUID()}.tmp`;
-    await fs.writeFile(temporary, JSON.stringify(data), { encoding: 'utf8', mode: 0o600 });
-    await fs.rename(temporary, target);
-  }
-
-  async loadEmbedding(mdPath: string): Promise<EmbeddingData | null> {
-    try {
-      const raw = await fs.readFile(this.embeddingPathFor(mdPath), 'utf8');
-      return JSON.parse(raw) as EmbeddingData;
-    } catch {
-      return null;
-    }
   }
 
   async generateEmbedding(text: string, kind: 'passage' | 'query'): Promise<number[]> {

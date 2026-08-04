@@ -16,6 +16,7 @@ const DEFAULT_GIT_TIMEOUT_MS = 10000;
 const LOCK_FILENAME = '.private-journal-sync.lock';
 const EMBEDDING_EXT = '.embedding';
 const EMBEDDING_GLOB = `*${EMBEDDING_EXT}`;
+const INDEX_FILE = '.private-journal-index.sqlite';
 const STALE_LOCK_MS = 120000;
 const PUSH_RETRY_LIMIT = 5;
 
@@ -198,7 +199,13 @@ export class GitSync {
       try {
         current = await fs.readFile(excludePath, 'utf8');
       } catch { /* 파일이 없으면 새로 만든다 */ }
-      const needed = [LOCK_FILENAME, EMBEDDING_GLOB].filter((rule) => !current.includes(rule));
+      const needed = [
+        LOCK_FILENAME,
+        EMBEDDING_GLOB,
+        INDEX_FILE,
+        `${INDEX_FILE}-wal`,
+        `${INDEX_FILE}-shm`,
+      ].filter((rule) => !current.split(/\r?\n/).includes(rule));
       if (needed.length > 0) {
         await fs.appendFile(excludePath, `\n${needed.join('\n')}\n`, 'utf8');
       }
@@ -409,13 +416,13 @@ export class GitSync {
     }
   }
 
-  // 두 커밋 사이에 추가/수정된 md만 고른다. 삭제(D)는 임베딩할 대상이 없다.
-  // before가 없으면(커밋이 하나도 없던 새 repo) after의 전체 트리가 새로 받은
-  // 것이다 — 빈 diff로 처리하면 첫 동기화 엔트리를 통째로 놓친다.
+  // 두 커밋 사이에 추가/수정/삭제된 md를 고른다. 삭제 경로는 인덱스 행 제거에
+  // 사용된다. before가 없으면(커밋이 하나도 없던 새 repo) after의 전체 트리가
+  // 새로 받은 것이다 — 빈 diff로 처리하면 첫 동기화 엔트리를 통째로 놓친다.
   private async changedMarkdownPaths(before: string | undefined, after: string): Promise<string[]> {
     try {
       const { stdout } = before
-        ? await this.git(['diff', '--name-only', '--diff-filter=AM', '-z', `${before}..${after}`])
+        ? await this.git(['diff', '--name-only', '--diff-filter=AMD', '-z', `${before}..${after}`])
         : await this.git(['ls-tree', '-r', '--name-only', '-z', after]);
       return stdout
         .split('\0')

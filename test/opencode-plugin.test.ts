@@ -62,21 +62,22 @@ describe('OpenCode plugin', () => {
           'const kinds = [];',
           'brokerModule.EmbeddingBroker.prototype.embedText = async (_text, kind) => {',
           '  kinds.push(kind);',
-          '  return [1, 0];',
+          '  return [1, 0, ...Array(382).fill(0)];',
           '};',
           'const hooks = await pluginModule.server({});',
           "const write = JSON.parse(await hooks.tool.write_journal.execute({ content: 'native plugin execution', section: 'technical_insights' }));",
           "const search = await hooks.tool.search_journal.execute({ query: 'native plugin', limit: 1, section: 'technical_insights' });",
           'const read = JSON.parse(await hooks.tool.read_journal.execute({ path: write.path }));',
           'const list = JSON.parse(await hooks.tool.list_journal.execute({ limit: 1, days: 1 }));',
-          "console.log(JSON.stringify({ embeddingExists: existsSync(write.path.replace(/\\.md$/, '.embedding')), kinds, list, read, search, write }));",
+          "console.log(JSON.stringify({ sidecarExists: existsSync(write.path.replace(/\\.md$/, '.embedding')), indexExists: existsSync(process.env.PRIVATE_JOURNAL_PATH + '/.private-journal-index.sqlite'), kinds, list, read, search, write }));",
         ].join('\n'),
         dataPath,
         { TMPDIR: tmpPath },
       );
 
       const result = JSON.parse(output.trim());
-      expect(result.embeddingExists).toBe(true);
+      expect(result.sidecarExists).toBe(false);
+      expect(result.indexExists).toBe(true);
       expect(result.kinds).toEqual(['passage', 'query']);
       expect(result.read.content).toContain('native plugin execution');
       expect(result.list).toHaveLength(1);

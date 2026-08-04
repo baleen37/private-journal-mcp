@@ -52,8 +52,16 @@ Run locally:
 node dist/index.js
 ```
 
+The first upgrade from the legacy `.embedding` sidecars requires a one-time
+index migration. It creates the SQLite vector index, verifies it, and removes
+sidecars only after success:
+
+```bash
+node dist/index.js migrate-index
+```
+
 Without a Git remote, the `sync` subcommand still runs local data migrations and
-rebuilds missing embeddings, but does not perform Git operations.
+incrementally indexes changed Markdown files, but does not perform Git operations.
 
 ```bash
 node dist/index.js sync
@@ -157,10 +165,8 @@ is cloned and merged with whatever is already local.
 
 Behavior:
 
-- A `write_journal` save **waits** for `commit + fetch + rebase + push` to
-  finish, capped at 15s (`SYNC_DEADLINE_MS`). If it takes longer, the tool
-  returns anyway and the sync keeps running in the background; the commit is
-  already local, so the next write or the SessionStart hook will push it.
+- A `write_journal` save returns after Markdown and the SQLite index are durable.
+  Git pull/commit/rebase/push runs in a detached background process.
 - Push is retried up to 5 times (`PUSH_RETRY_LIMIT`) with exponential backoff
   (100/200/400/800ms), which lets several machines writing at once converge
   without losing entries.
@@ -174,6 +180,13 @@ Behavior:
   file in the data directory. If another session already holds it, this run
   is skipped (not queued); the next run picks up whatever is pending. Locks
   older than 120s are considered stale and stolen.
+- All Claude Code and Codex sessions for one OS user share one embedding worker
+  and one active model inference. Query embeddings have priority over queued
+  passage backfill. SQLite WAL allows concurrent index readers and short writes.
+- Markdown and Git remain canonical. SQLite is disposable derived state at
+  `.private-journal-index.sqlite`; its WAL/SHM files are excluded from Git.
+- A missing or incomplete SQLite index is backfilled from Markdown once. Once
+  it is complete, startup processes only Git-reported changed paths.
 - Reads (`search_journal`, `list_journal`, `read_journal`) do not pull. A
   session sees the snapshot from when it started, plus anything it wrote
   itself. Changes from other machines arrive at the next session start or
@@ -192,7 +205,7 @@ an incompatible change.
 
 When installed as a plugin, the SessionStart sync hook is registered automatically
 (see `hooks/hooks.json`) — nothing to configure. Without a configured remote it
-still runs local data migrations and embedding backfill.
+still runs local data migrations and incremental index backfill.
 
 The hook uses `sync --background`, so SessionStart returns immediately while the
 existing sync process continues in the background. To run the same sync in the
@@ -222,6 +235,6 @@ To wire it up manually instead, add to `~/.claude/settings.json`:
 - Distinct entries mostly coexist automatically because filenames include a microsecond suffix.
 - When two entries share a filename, the one with the larger frontmatter `timestamp` wins.
 - If the `timestamp` is identical, the local version takes precedence.
-- The `.embedding` file may be regenerated based on the adopted Markdown.
-- `.gitattributes` marks `*.embedding` as binary, so Git never tries to
-  merge vector files line by line.
+- The SQLite row for the adopted Markdown is regenerated from the source file.
+- Legacy `.embedding` files are not part of runtime conflict handling; run
+  `migrate-index` once to convert and remove them.

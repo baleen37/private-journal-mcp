@@ -35,13 +35,20 @@ The database contains:
 
 Markdown files remain the source of truth. The SQLite database is disposable and can be rebuilt from Markdown plus the single embedding worker.
 
+Revision ownership is target-specific: the journal data format keeps its existing
+version metadata, while SQLite stores `schema_revision` in `index_meta`. Migration
+implementations live under `src/migration/<target>/<NNN-name>.ts`; the exported
+`from`/`to` values and persisted revision are authoritative over the filename.
+
 ## Migration
 
 `migrate-index` creates a temporary database beside the target database. It reads existing sidecars only as one-time migration input, validates their metadata and vector dimensions, and recomputes missing or invalid vectors from Markdown through `EmbeddingService`.
 
 The migration verifies that every Markdown file has a valid SQLite entry before atomically renaming the temporary database into place. Only after verification does it delete the old `.embedding` files and update Git excludes. A failed migration leaves the original sidecars untouched.
 
-Normal runtime code does not read `.embedding` files after migration.
+Normal runtime code does not read `.embedding` files after migration. A failed
+migration may leave the legacy files in place for recovery, but that is not a
+runtime fallback path.
 
 ## Runtime flow
 
@@ -63,7 +70,7 @@ Normal runtime code does not read `.embedding` files after migration.
 
 ### Git pull and background sync
 
-`GitSync.pull()` already returns changed Markdown paths. The background sync passes those paths to the indexer, which deletes/rebuilds only affected rows. Deleted Markdown paths remove their SQLite rows. A full filesystem walk is used only for explicit migration or an index integrity rebuild.
+`GitSync.pull()` already returns changed Markdown paths. The background sync passes those paths to the indexer, which deletes/rebuilds only affected rows. Deleted Markdown paths remove their SQLite rows. MCP startup and SessionStart use a full filesystem walk only when the SQLite index is missing or marked incomplete; a complete index processes only Git-reported paths. Explicit migration and index integrity rebuilds may also use a full walk.
 
 ## Concurrency
 

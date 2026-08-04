@@ -5,7 +5,7 @@ import * as path from 'path';
 import * as os from 'os';
 
 describe('JournalManager.write', () => {
-  it('writes .md and .embedding under dated dir', async () => {
+  it('writes Markdown under a dated directory without doing embedding work', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'jm-'));
     const emb = EmbeddingService.getInstance();
     jest.spyOn(emb, 'generateEmbedding').mockResolvedValue([0.1, 0.2, 0.3]);
@@ -17,11 +17,7 @@ describe('JournalManager.write', () => {
     expect(mdPath.endsWith('.md')).toBe(true);
     const md = await fs.readFile(mdPath, 'utf8');
     expect(md).toContain('오늘의 회고');
-
-    const embPath = mdPath.replace(/\.md$/, '.embedding');
-    const embData = JSON.parse(await fs.readFile(embPath, 'utf8'));
-    expect(embData.sections).toContain('reflections');
-    expect(embData.embedding).toEqual([0.1, 0.2, 0.3]);
+    expect(emb.generateEmbedding).not.toHaveBeenCalled();
   });
 
   it('hasContent is false when all sections empty', () => {
@@ -31,7 +27,7 @@ describe('JournalManager.write', () => {
     expect(jm.hasContent({ reflections: 'x' })).toBe(true);
   });
 
-  it('still returns md path if embedding generation fails', async () => {
+  it('returns the Markdown path without depending on embedding availability', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'jm-'));
     const emb = EmbeddingService.getInstance();
     jest.spyOn(emb, 'generateEmbedding').mockRejectedValue(new Error('model fail'));

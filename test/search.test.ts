@@ -5,24 +5,31 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 
+function vector(first: number, second = 0): number[] {
+  return [first, second, ...Array<number>(382).fill(0)];
+}
+
 async function seed() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srch-'));
   const emb = EmbeddingService.getInstance();
   const jm = new JournalManager(dir, emb);
   // deterministic vectors: "cat" entry -> [1,0]; "dog" entry -> [0,1]
   jest.spyOn(emb, 'generateEmbedding').mockImplementation(async (text: string) => {
-    if (text.includes('고양이')) return [1, 0];
-    return [0, 1];
+    if (text.includes('고양이')) return vector(1);
+    return vector(0, 1);
   });
   await jm.write({ reflections: '고양이에 대한 기록' }, new Date('2026-06-20T10:00:00Z'));
   await jm.write({ observations: '강아지 관찰' }, new Date('2026-06-24T10:00:00Z'));
+  const index = new SearchService(dir, emb);
+  await index.backfill();
+  index.close();
   return { dir, emb };
 }
 
 describe('SearchService.search', () => {
   it('ranks the semantically closest entry first', async () => {
     const { dir, emb } = await seed();
-    jest.spyOn(emb, 'generateEmbedding').mockResolvedValue([1, 0]); // query ~ cat
+    jest.spyOn(emb, 'generateEmbedding').mockResolvedValue(vector(1)); // query ~ cat
     const svc = new SearchService(dir, emb);
     const results = await svc.search('고양이', { limit: 5 });
     expect(results.length).toBeGreaterThanOrEqual(1);
@@ -32,7 +39,7 @@ describe('SearchService.search', () => {
 
   it('filters by sections', async () => {
     const { dir, emb } = await seed();
-    jest.spyOn(emb, 'generateEmbedding').mockResolvedValue([0, 1]);
+    jest.spyOn(emb, 'generateEmbedding').mockResolvedValue(vector(0, 1));
     const svc = new SearchService(dir, emb);
     const results = await svc.search('강아지', { sections: ['observations'] });
     expect(results.every(r => r.sections.includes('observations'))).toBe(true);
@@ -42,7 +49,7 @@ describe('SearchService.search', () => {
 describe('SearchService.search limit clamping', () => {
   it('does not leak the whole corpus for negative limits', async () => {
     const { dir, emb } = await seed();
-    jest.spyOn(emb, 'generateEmbedding').mockResolvedValue([1, 0]);
+    jest.spyOn(emb, 'generateEmbedding').mockResolvedValue(vector(1));
     const svc = new SearchService(dir, emb);
     // slice(0, -1)은 "마지막 하나만 뺀 전부"였다. 이제 기본 limit으로 떨어진다.
     const results = await svc.search('고양이', { limit: -1 });
@@ -52,7 +59,7 @@ describe('SearchService.search limit clamping', () => {
 
   it('falls back to the default limit when limit is zero', async () => {
     const { dir, emb } = await seed();
-    jest.spyOn(emb, 'generateEmbedding').mockResolvedValue([1, 0]);
+    jest.spyOn(emb, 'generateEmbedding').mockResolvedValue(vector(1));
     const svc = new SearchService(dir, emb);
     const results = await svc.search('고양이', { limit: 0 });
     expect(results.length).toBeGreaterThan(0);
@@ -60,7 +67,7 @@ describe('SearchService.search limit clamping', () => {
 
   it('caps oversized limits to MAX_SEARCH_LIMIT', async () => {
     const { dir, emb } = await seed();
-    jest.spyOn(emb, 'generateEmbedding').mockResolvedValue([1, 0]);
+    jest.spyOn(emb, 'generateEmbedding').mockResolvedValue(vector(1));
     const svc = new SearchService(dir, emb);
     const results = await svc.search('고양이', { limit: 99999 });
     expect(results.length).toBeLessThanOrEqual(MAX_SEARCH_LIMIT);
@@ -71,7 +78,7 @@ describe('SearchService.search minScore', () => {
   it('drops results below the score floor', async () => {
     const { dir, emb } = await seed();
     // query orthogonal to the "dog" entry -> cosine 0 for it, 1 for "cat"
-    jest.spyOn(emb, 'generateEmbedding').mockResolvedValue([1, 0]);
+    jest.spyOn(emb, 'generateEmbedding').mockResolvedValue(vector(1));
     const svc = new SearchService(dir, emb);
     const results = await svc.search('고양이', { limit: 10, minScore: 0.5 });
     expect(results.length).toBeGreaterThan(0);
@@ -80,7 +87,7 @@ describe('SearchService.search minScore', () => {
 
   it('returns an empty list when nothing clears the floor', async () => {
     const { dir, emb } = await seed();
-    jest.spyOn(emb, 'generateEmbedding').mockResolvedValue([1, 0]);
+    jest.spyOn(emb, 'generateEmbedding').mockResolvedValue(vector(1));
     const svc = new SearchService(dir, emb);
     const results = await svc.search('고양이', { limit: 10, minScore: 1.5 });
     expect(results).toHaveLength(0);
@@ -105,6 +112,7 @@ describe('SearchService.listRecent', () => {
       );
     }
     const svc = new SearchService(dir, emb);
+    await svc.backfill();
 
     const recent = await svc.listRecent({ limit: 2, days: 3650 });
     expect(recent).toHaveLength(2);
@@ -123,6 +131,7 @@ describe('SearchService.listRecent', () => {
       );
     }
     const svc = new SearchService(dir, emb);
+    await svc.backfill();
     const all = await svc.listRecent({ limit: 50, days: 3650 });
     expect(all).toHaveLength(10);
 
@@ -138,6 +147,7 @@ describe('SearchService.listRecent', () => {
     await jm.write({ observations: 'fresh' }, new Date());
 
     const svc = new SearchService(dir, emb);
+    await svc.backfill();
     const recent = await svc.listRecent({ limit: 10, days: 7 });
 
     expect(recent.every((e) => e.timestamp >= Date.now() - 8 * 24 * 60 * 60 * 1000)).toBe(true);
@@ -146,21 +156,12 @@ describe('SearchService.listRecent', () => {
 });
 
 describe('SearchService.backfill', () => {
-  it('creates missing .embedding files', async () => {
+  it('creates missing SQLite index rows', async () => {
     const { dir, emb } = await seed();
-    // delete one embedding
-    const files: string[] = [];
-    async function walk(d: string) {
-      for (const e of await fs.readdir(d, { withFileTypes: true })) {
-        const p = path.join(d, e.name);
-        if (e.isDirectory()) await walk(p);
-        else if (e.name.endsWith('.embedding')) files.push(p);
-      }
-    }
-    await walk(dir);
-    await fs.unlink(files[0]);
-    jest.spyOn(emb, 'generateEmbedding').mockResolvedValue([0.5, 0.5]);
     const svc = new SearchService(dir, emb);
+    const files = await svc.listEntryFiles();
+    await svc.removePath(files[0]);
+    jest.spyOn(emb, 'generateEmbedding').mockResolvedValue(vector(0.5, 0.5));
     const n = await svc.backfill();
     expect(n).toBe(1);
   });
@@ -169,18 +170,17 @@ describe('SearchService.backfill', () => {
     const { dir, emb } = await seed();
     const jm = new JournalManager(dir, emb);
     const target = await jm.write({ observations: 'pulled entry' }, new Date('2026-07-30T10:00:00Z'));
-    await fs.rm(target.replace(/\.md$/, '.embedding'));
 
     const svc = new SearchService(dir, emb);
     const listSpy = jest.spyOn(svc, 'listEntryFiles');
-    jest.spyOn(emb, 'generateEmbedding').mockResolvedValue([0.5, 0.5]);
+    jest.spyOn(emb, 'generateEmbedding').mockResolvedValue(vector(0.5, 0.5));
 
     const created = await svc.backfillPaths([target]);
 
     expect(created).toBe(1);
     // 대상 경로를 이미 알고 있으므로 전체 목록을 훑지 않아야 한다
     expect(listSpy).not.toHaveBeenCalled();
-    expect(await emb.loadEmbedding(target)).not.toBeNull();
+    expect((await svc.search('pulled entry', { limit: 10 })).some((result) => result.path === target)).toBe(true);
   });
 
   it('ignores paths outside dataPath and paths that already have embeddings', async () => {
@@ -192,10 +192,11 @@ describe('SearchService.backfill', () => {
     await fs.writeFile(outside, '## Reflections\n\nsecret\n', 'utf8');
 
     const svc = new SearchService(dir, emb);
+    await svc.indexPath(kept);
     const created = await svc.backfillPaths([kept, outside]);
 
     expect(created).toBe(0);
-    await expect(fs.access(outside.replace(/\.md$/, '.embedding'))).rejects.toBeDefined();
+    expect((await svc.search('secret', { limit: 10 })).some((result) => result.path === outside)).toBe(false);
   });
 
   it('skips markdown symlinks that resolve outside dataPath while keeping regular markdown files', async () => {
@@ -218,7 +219,7 @@ describe('SearchService.backfill', () => {
     const symlinkPath = path.join(dir, 'leak.md');
     await fs.symlink(outsideMd, symlinkPath);
 
-    jest.spyOn(emb, 'generateEmbedding').mockResolvedValue([0.25, 0.75]);
+    jest.spyOn(emb, 'generateEmbedding').mockResolvedValue(vector(0.25, 0.75));
     const svc = new SearchService(dir, emb);
 
     const files = await svc.listEntryFiles();
@@ -227,7 +228,6 @@ describe('SearchService.backfill', () => {
 
     const created = await svc.backfill();
     expect(created).toBe(0);
-    await expect(fs.access(path.join(dir, 'leak.embedding'))).rejects.toBeDefined();
 
     const results = await svc.search('secret outside content', { limit: 20 });
     expect(results.some((result) => result.path === symlinkPath)).toBe(false);

@@ -54,9 +54,21 @@ jest.mock('../src/migrations', () => ({
 
 const backfill = jest.fn().mockResolvedValue(0);
 const backfillPaths = jest.fn().mockResolvedValue(0);
+const needsInitialBackfill = jest.fn().mockReturnValue(false);
 
 jest.mock('../src/search', () => ({
-  SearchService: jest.fn().mockImplementation(() => ({ backfill, backfillPaths })),
+  SearchService: jest.fn().mockImplementation(() => ({ backfill, backfillPaths, needsInitialBackfill })),
+}));
+
+jest.mock('../src/index-migration', () => ({
+  migrateLegacyIndex: jest.fn().mockResolvedValue({
+    dbPath: '/resolved/data/path/.private-journal-index.sqlite',
+    fromRevision: 0,
+    toRevision: 1,
+    indexed: 1,
+    recomputed: 1,
+    removedSidecars: 1,
+  }),
 }));
 
 jest.mock('../src/embeddings', () => ({
@@ -77,6 +89,7 @@ import { GitSync } from '../src/git-sync';
 import { EmbeddingWorker } from '../src/embedding-worker';
 import { PrivateJournalServer } from '../src/server';
 import { runSync, main } from '../src/index';
+import { migrateLegacyIndex } from '../src/index-migration';
 
 // runSync falls back to process.env.PRIVATE_JOURNAL_GIT_REMOTE when opts.remote
 // is undefined, so a machine that has the var configured would otherwise see
@@ -108,13 +121,15 @@ describe('runSync', () => {
     mockMigrationsRun.mockClear();
     backfill.mockClear();
     backfillPaths.mockClear();
+    needsInitialBackfill.mockReset();
+    needsInitialBackfill.mockReturnValue(false);
     resolveDataPath.mockClear();
     resolveGitRemote.mockReset();
     resolveGitRemote.mockImplementation((remote?: string) => remote);
     (GitSync as jest.Mock).mockClear();
   });
 
-  it('runs migration and backfill when remote is undefined', async () => {
+  it('runs migration without scanning when remote is undefined', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'idx-'));
 
     await runSync({ dataPath: dir, remote: undefined });
@@ -125,7 +140,7 @@ describe('runSync', () => {
     expect(pull).not.toHaveBeenCalled();
     expect(commitAndPush).not.toHaveBeenCalled();
     expect(mockMigrationsRun).toHaveBeenCalledTimes(1);
-    expect(backfill).toHaveBeenCalledTimes(1);
+    expect(backfill).not.toHaveBeenCalled();
     expect(backfillPaths).not.toHaveBeenCalled();
   });
 
@@ -149,17 +164,25 @@ describe('runSync', () => {
     expect(backfill).not.toHaveBeenCalled();
   });
 
-  // 이 CLI는 MCP 서버와 별개 프로세스라, 서버를 안 쓰는 기기에서는 기동
-  // backfill()이 실행되지 않는다. pull이 없을 때 전체 스캔을 아예 건너뛰면
-  // 그런 기기의 미임베딩 엔트리가 영구히 검색되지 않는다.
-  it('falls back to a full scan when the sync pulled nothing', async () => {
+  it('does not scan the corpus when the sync pulled nothing', async () => {
     resolveGitRemote.mockReturnValue('resolved.git');
     pull.mockResolvedValueOnce([]);
 
     await runSync({ dataPath: '/resolved/data/path' });
 
     expect(backfillPaths).not.toHaveBeenCalled();
+    expect(backfill).not.toHaveBeenCalled();
+  });
+
+  it('backfills an incomplete index when the initial pull reports no paths', async () => {
+    resolveGitRemote.mockReturnValue('resolved.git');
+    needsInitialBackfill.mockReturnValueOnce(true);
+    pull.mockResolvedValueOnce([]);
+
+    await runSync({ dataPath: '/resolved/data/path' });
+
     expect(backfill).toHaveBeenCalledTimes(1);
+    expect(backfillPaths).not.toHaveBeenCalled();
   });
 
   it('runs migration after pull and before sync commit', async () => {
@@ -175,6 +198,15 @@ describe('runSync', () => {
       { remoteAlreadyPulled: true },
     );
   });
+
+  it('indexes Markdown paths returned by the local commit', async () => {
+    resolveGitRemote.mockReturnValue('resolved.git');
+    commitAndPush.mockResolvedValueOnce(['/resolved/data/path/2026-08-04/local.md']);
+
+    await runSync({ dataPath: '/resolved/data/path' });
+
+    expect(backfillPaths).toHaveBeenCalledWith(['/resolved/data/path/2026-08-04/local.md']);
+  });
 });
 
 describe('main', () => {
@@ -185,6 +217,8 @@ describe('main', () => {
     mockMigrationsRun.mockClear();
     backfill.mockClear();
     backfillPaths.mockClear();
+    needsInitialBackfill.mockReset();
+    needsInitialBackfill.mockReturnValue(false);
     resolveDataPath.mockClear();
     resolveGitRemote.mockReset();
     resolveGitRemote.mockImplementation((remote?: string) => remote);
@@ -193,6 +227,7 @@ describe('main', () => {
     mockWorkerListen.mockClear();
     (PrivateJournalServer as jest.Mock).mockClear();
     mockSpawn.mockReset();
+    jest.mocked(migrateLegacyIndex).mockClear();
   });
 
   it('dispatches embedding-worker before sync or MCP startup', async () => {
@@ -214,6 +249,13 @@ describe('main', () => {
 
     expect(resolveDataPath).toHaveBeenCalledTimes(1);
     expect(ensureRepo).not.toHaveBeenCalled();
+    expect(PrivateJournalServer).not.toHaveBeenCalled();
+  });
+
+  it('dispatches migrate-index to the revision migration runner', async () => {
+    await main(['node', 'index.js', 'migrate-index']);
+
+    expect(migrateLegacyIndex).toHaveBeenCalledWith({ dataPath: '/resolved/data/path' });
     expect(PrivateJournalServer).not.toHaveBeenCalled();
   });
 

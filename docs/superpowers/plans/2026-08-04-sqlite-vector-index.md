@@ -40,7 +40,7 @@
 
 - [ ] Write failing tests for valid sidecar import, missing sidecar recomputation through an injected embedding service, invalid vector dimension recomputation, atomic replacement, and sidecar deletion only after complete verification.
 - [ ] Run `npx jest test/index-migration.test.ts --runInBand` and verify the expected missing-module failure.
-- [ ] Implement a temporary-database migration. Scan Markdown once, read legacy sidecars only inside this command, validate path/timestamp/text/sections/vector dimension, compute replacements through the existing `EmbeddingService`, verify row count and every source path, atomically rename the temporary database, then remove sidecars and add SQLite/WAL files to Git excludes.
+- [ ] Implement a revision 0 -> 1 temporary-database migration in `src/migration/index/001-sidecar-to-sqlite.ts`. Scan Markdown once, read legacy sidecars only inside this command, validate path/timestamp/text/sections/vector dimension, compute replacements through the existing `EmbeddingService`, verify row count and every source path, atomically rename the temporary database, then remove sidecars and add SQLite/WAL files to Git excludes.
 - [ ] Run `npx jest test/index-migration.test.ts --runInBand` and verify it passes.
 
 ### Task 3: Replace SearchService sidecar reads with incremental SQLite indexing
@@ -52,7 +52,7 @@
 - [ ] Write failing tests proving search does not call sidecar loading and unchanged files are skipped.
 - [ ] Run `npx jest test/search.test.ts --runInBand` and verify the failure is caused by the current sidecar implementation.
 - [ ] Implement incremental indexing by comparing Markdown mtime with `index_state`, reading changed Markdown, generating passage embeddings through the shared worker, and upserting changed paths.
-- [ ] Replace semantic search with one query embedding plus `sqlite-vec` KNN and section filters. Replace recent listing with SQL timestamp ordering. Keep `read_journal` reading Markdown.
+- [ ] Replace semantic search with one query embedding plus `sqlite-vec` KNN and section filters. Replace recent listing with SQL timestamp ordering. Keep `read_journal` reading Markdown. Keep startup and SessionStart incremental for complete indexes, while allowing one full walk when the SQLite index is missing or incomplete.
 - [ ] Move legacy sidecar parsing exclusively into `index-migration.ts`; remove runtime `EmbeddingService.loadEmbedding/saveEmbedding` and update tests.
 - [ ] Run `npx jest test/search.test.ts test/server.test.ts test/journal.write.test.ts --runInBand` and verify it passes.
 
