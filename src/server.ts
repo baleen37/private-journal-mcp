@@ -6,9 +6,10 @@ import { z } from 'zod';
 import { EmbeddingService } from './embeddings';
 import { GitSync } from './git-sync';
 import { JournalManager } from './journal';
-import { CURRENT_DATA_VERSION, DataVersionError, MigrationManager } from './migrations';
+import { CURRENT_DATA_VERSION, MigrationManager } from './migrations';
 import { resolveDataPath, resolveGitRemote } from './paths';
 import { SearchService, MAX_SEARCH_LIMIT } from './search';
+import { launchBackgroundSync } from './sync-launcher';
 import {
   JournalSection,
   JournalSections,
@@ -39,7 +40,6 @@ interface ListArgs {
 }
 
 const DEFAULT_SECTION: JournalSection = 'observations';
-const SYNC_DEADLINE_MS = 15000;
 
 // 잘못된 limit이 응답을 폭발시키지 않도록 스키마에서 막는다. 음수는 slice로
 // 코퍼스 전체가 새고, 과대값은 컨텍스트를 넘긴다.
@@ -103,13 +103,15 @@ export class PrivateJournalServer {
   private readonly search: SearchService;
   private readonly git: GitSync;
   private readonly migrations: MigrationManager;
+  private readonly remote: string | undefined;
 
   constructor(opts: { dataPath?: string; remote?: string } = {}) {
     this.dataPath = opts.dataPath ?? resolveDataPath();
     const embeddings = EmbeddingService.getInstance();
     this.journal = new JournalManager(this.dataPath, embeddings);
     this.search = new SearchService(this.dataPath, embeddings);
-    this.git = new GitSync(this.dataPath, resolveGitRemote(opts.remote));
+    this.remote = resolveGitRemote(opts.remote);
+    this.git = new GitSync(this.dataPath, this.remote);
     this.migrations = new MigrationManager(this.dataPath);
   }
 
@@ -131,47 +133,13 @@ export class PrivateJournalServer {
       throw new Error('At least one journal section must have content.');
     }
 
-    await this.prepareData();
+    await this.migrations.run();
     const entryPath = await this.journal.write(sections);
+    await this.search.indexPath(entryPath);
 
-    // 동기화로 들어온 원격 엔트리는 임베딩이 없어 검색에서 조용히 빠진다
-    // (.embedding은 git 추적 대상이 아니다). 동기화가 건드린 경로만 즉시
-    // 임베딩해서 다음 재시작까지 기다리지 않게 한다. 방금 쓴 로컬 엔트리도
-    // 함께 보고되지만 이미 임베딩이 있어 건너뛴다.
-    const sync = this.git
-      .commitAndPush(`journal: ${new Date().toISOString()}`, CURRENT_DATA_VERSION)
-      .then((synced) => this.embedSynced(synced))
-      .catch((error: unknown) => {
-        if (error instanceof DataVersionError) throw error;
-        console.error('[private-journal] commitAndPush failed (best-effort):', error);
-      });
-
-    let timer: NodeJS.Timeout | undefined;
-    const deadline = new Promise<void>((resolve) => {
-      timer = setTimeout(() => {
-        console.error('[private-journal] sync exceeded 15s; continuing in background');
-        resolve();
-      }, SYNC_DEADLINE_MS);
-    });
-    try {
-      await Promise.race([sync, deadline]);
-    } finally {
-      clearTimeout(timer);
-    }
+    if (this.git.enabled) launchBackgroundSync(this.dataPath, this.remote);
 
     return { path: entryPath };
-  }
-
-  private async embedSynced(synced: string[]): Promise<void> {
-    if (synced.length === 0) return;
-    try {
-      const created = await this.search.backfillPaths(synced);
-      if (created > 0) {
-        console.error(`[private-journal] embedded ${created} synced entry(ies)`);
-      }
-    } catch (error: unknown) {
-      console.error('[private-journal] embedding synced entries failed (best-effort):', error);
-    }
   }
 
   async handleSearch(args: SearchArgs): Promise<SearchResult[]> {
@@ -212,11 +180,16 @@ export class PrivateJournalServer {
   }
 
   async initialize(): Promise<void> {
-    await this.prepareData();
-
-    await this.search.backfill().catch((error: unknown) => {
-      console.error('[private-journal] backfill failed (best-effort):', error);
-    });
+    const pulled = await this.prepareData();
+    if (this.search.needsInitialBackfill()) {
+      await this.search.backfill().catch((error: unknown) => {
+        console.error('[private-journal] initial index backfill failed (best-effort):', error);
+      });
+    } else if (pulled.length > 0) {
+      await this.search.backfillPaths(pulled).catch((error: unknown) => {
+        console.error('[private-journal] pulled index update failed (best-effort):', error);
+      });
+    }
   }
 
   async run(): Promise<void> {

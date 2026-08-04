@@ -55,6 +55,40 @@ describe('EmbeddingWorker', () => {
     ]);
   });
 
+  it('serves queued query embeddings before queued passage backfill', async () => {
+    const { dir, socketPath } = await makeFixture();
+    cleanup.push(() => fs.rm(dir, { recursive: true, force: true }));
+    const order: string[] = [];
+    let releaseFirst!: () => void;
+    const firstCanFinish = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let firstStarted!: () => void;
+    const started = new Promise<void>((resolve) => { firstStarted = resolve; });
+    const worker = new EmbeddingWorker({
+      engine: {
+        embed: async (text: string) => {
+          order.push(text);
+          if (text === 'first passage') {
+            firstStarted();
+            await firstCanFinish;
+          }
+          return [order.length];
+        },
+      },
+      runtimePaths: { socketPath },
+      idleMs: 0,
+    });
+
+    const first = worker.handle({ id: '1', type: 'embedText', text: 'first passage', kind: 'passage' });
+    await started;
+    const second = worker.handle({ id: '2', type: 'embedText', text: 'second passage', kind: 'passage' });
+    const query = worker.handle({ id: '3', type: 'embedText', text: 'interactive query', kind: 'query' });
+    releaseFirst();
+
+    await Promise.all([first, second, query]);
+    expect(order).toEqual(['first passage', 'interactive query', 'second passage']);
+    await worker.close();
+  });
+
   it('returns a framed vector response with the matching request id', async () => {
     const { dir, socketPath } = await makeFixture();
     cleanup.push(() => fs.rm(dir, { recursive: true, force: true }));

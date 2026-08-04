@@ -6,6 +6,7 @@ import { EmbeddingService } from '../src/embeddings';
 import { DataVersionError } from '../src/migrations';
 import { SearchService } from '../src/search';
 import { PrivateJournalServer } from '../src/server';
+import { launchBackgroundSync } from '../src/sync-launcher';
 import { JOURNAL_SECTIONS } from '../src/types';
 
 const mockMigrationsRun = jest.fn().mockResolvedValue(undefined);
@@ -15,6 +16,9 @@ jest.mock('../src/migrations', () => ({
   DataVersionError: class DataVersionError extends Error {},
   MigrationManager: jest.fn().mockImplementation(() => ({ run: mockMigrationsRun })),
 }));
+
+jest.mock('../src/sync-launcher', () => ({ launchBackgroundSync: jest.fn() }));
+const mockLaunchBackgroundSync = jest.mocked(launchBackgroundSync);
 
 const remoteEnvKeys = [
   'PRIVATE_JOURNAL_GIT_REMOTE',
@@ -32,6 +36,10 @@ type RegisteredTool = {
   };
   callback: (args: Record<string, unknown>) => Promise<{ content: Array<{ type: string; text: string }> }>;
 };
+
+function testVector(first = 0.1, second = 0): number[] {
+  return [first, second, ...Array<number>(382).fill(0)];
+}
 
 async function collectRegisteredTools(srv: PrivateJournalServer): Promise<RegisteredTool[]> {
   const tools: RegisteredTool[] = [];
@@ -67,6 +75,7 @@ describe('PrivateJournalServer handlers', () => {
 
   afterEach(() => {
     mockMigrationsRun.mockClear();
+    mockLaunchBackgroundSync.mockClear();
     jest.restoreAllMocks();
   });
 
@@ -95,7 +104,7 @@ describe('PrivateJournalServer handlers', () => {
 
   it('write then read returns content', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-'));
-    jest.spyOn(EmbeddingService.getInstance(), 'generateEmbedding').mockResolvedValue([0.1, 0.2]);
+    jest.spyOn(EmbeddingService.getInstance(), 'generateEmbedding').mockResolvedValue(testVector(0.1, 0.2));
     const srv = new PrivateJournalServer({ dataPath: dir });
 
     const { path: entryPath } = await srv.handleWrite({
@@ -327,7 +336,7 @@ describe('PrivateJournalServer handlers', () => {
 
   it('handleList returns the written entry', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-'));
-    jest.spyOn(EmbeddingService.getInstance(), 'generateEmbedding').mockResolvedValue([0.1, 0.2]);
+    jest.spyOn(EmbeddingService.getInstance(), 'generateEmbedding').mockResolvedValue(testVector(0.1, 0.2));
     const srv = new PrivateJournalServer({ dataPath: dir });
 
     await srv.handleWrite({ content: '관찰', section: 'observations' });
@@ -348,7 +357,7 @@ describe('PrivateJournalServer handlers', () => {
     expect(connect).not.toHaveBeenCalled();
   });
 
-  it('initializes pull, migration, and embedding backfill before returning', async () => {
+  it('initializes pull and migration without a full corpus scan', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-init-'));
     const srv = new PrivateJournalServer({ dataPath: dir, remote: 'resolved.git' });
     const order: string[] = [];
@@ -360,20 +369,30 @@ describe('PrivateJournalServer handlers', () => {
       order.push('pull');
       return [];
     });
+    jest.spyOn((srv as any).search, 'needsInitialBackfill').mockReturnValue(false);
     mockMigrationsRun.mockImplementationOnce(async () => {
       order.push('migration');
     });
-    jest.spyOn(SearchService.prototype, 'backfill').mockImplementationOnce(async () => {
-      order.push('backfill');
-      return 0;
-    });
+    await (srv as any).initialize();
+
+    expect(order).toEqual(['ensureRepo', 'pull', 'migration']);
+  });
+
+  it('backfills an incomplete index when the initial pull reports no paths', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-init-backfill-'));
+    const srv = new PrivateJournalServer({ dataPath: dir, remote: 'resolved.git' });
+    jest.spyOn((srv as any).git, 'ensureRepo').mockResolvedValue(undefined);
+    jest.spyOn((srv as any).git, 'pull').mockResolvedValue([]);
+    const backfill = jest.spyOn((srv as any).search, 'backfill').mockResolvedValue(1);
+    const backfillPaths = jest.spyOn((srv as any).search, 'backfillPaths').mockResolvedValue(0);
 
     await (srv as any).initialize();
 
-    expect(order).toEqual(['ensureRepo', 'pull', 'migration', 'backfill']);
+    expect(backfill).toHaveBeenCalledTimes(1);
+    expect(backfillPaths).not.toHaveBeenCalled();
   });
 
-  it('run performs ensureRepo, pull, migration, and backfill before connect', async () => {
+  it('run performs ensureRepo, pull, and migration before connect', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-'));
     const srv = new PrivateJournalServer({ dataPath: dir, remote: 'resolved.git' });
     const order: string[] = [];
@@ -388,10 +407,6 @@ describe('PrivateJournalServer handlers', () => {
     mockMigrationsRun.mockImplementation(async () => {
       order.push('migration');
     });
-    jest.spyOn((srv as any).search, 'backfill').mockImplementation(async () => {
-      order.push('backfill');
-      return 0;
-    });
     jest.spyOn(McpServer.prototype, 'connect').mockImplementation(async () => {
       order.push('connect');
       return undefined as never;
@@ -399,106 +414,36 @@ describe('PrivateJournalServer handlers', () => {
 
     await srv.run();
 
-    expect(order).toEqual(['ensureRepo', 'pull', 'migration', 'backfill', 'connect']);
+    expect(order).toEqual(['ensureRepo', 'pull', 'migration', 'connect']);
   });
 
   describe('handleWrite git sync', () => {
     beforeEach(() => {
-      jest.spyOn(EmbeddingService.getInstance(), 'generateEmbedding').mockResolvedValue([0.1, 0.2]);
+      jest.spyOn(EmbeddingService.getInstance(), 'generateEmbedding').mockResolvedValue(testVector(0.1, 0.2));
     });
 
-    it('waits for commitAndPush before returning', async () => {
-      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-await-'));
+    it('returns after local durability and launches Git sync in the background', async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-async-'));
       const srv = new PrivateJournalServer({ dataPath: dir, remote: 'file:///nonexistent.git' });
+      const pull = jest.spyOn((srv as any).git, 'pull');
+      const commitAndPush = jest.spyOn((srv as any).git, 'commitAndPush');
 
-      jest.spyOn((srv as any).git, 'ensureRepo').mockResolvedValue(undefined);
-      jest.spyOn((srv as any).git, 'pull').mockResolvedValue([]);
+      const result = await srv.handleWrite({ content: 'sync test' });
 
-      let finished = false;
-      jest.spyOn((srv as unknown as { git: { commitAndPush: () => Promise<string[]> } }).git, 'commitAndPush')
-        .mockImplementation(async () => {
-          await new Promise((resolve) => setTimeout(resolve, 50));
-          finished = true;
-          return [];
-        });
-
-      await srv.handleWrite({ content: 'sync test' });
-      // await였다면 리턴 시점에 이미 끝났어야 한다
-      expect(finished).toBe(true);
+      expect(result.path).toContain('.md');
+      await expect(fs.access(result.path)).resolves.toBeUndefined();
+      expect(pull).not.toHaveBeenCalled();
+      expect(commitAndPush).not.toHaveBeenCalled();
+      expect(mockLaunchBackgroundSync).toHaveBeenCalledWith(dir, 'file:///nonexistent.git');
     });
 
-    it('embeds entries pulled in by the sync', async () => {
-      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-pulled-'));
-      const srv = new PrivateJournalServer({ dataPath: dir, remote: 'file:///nonexistent.git' });
-      const pulled = [path.join(dir, '2026-07-30', 'remote.md')];
-
-      jest.spyOn((srv as any).git, 'ensureRepo').mockResolvedValue(undefined);
-      jest.spyOn((srv as any).git, 'pull').mockResolvedValue([]);
-      jest.spyOn((srv as unknown as { git: { commitAndPush: () => Promise<string[]> } }).git, 'commitAndPush')
-        .mockResolvedValue(pulled);
-      const backfillPaths = jest
-        .spyOn(SearchService.prototype, 'backfillPaths')
-        .mockResolvedValue(1);
+    it('does not launch Git sync for a local-only journal', async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-local-'));
+      const srv = new PrivateJournalServer({ dataPath: dir });
 
       await srv.handleWrite({ content: 'local note' });
 
-      expect(backfillPaths).toHaveBeenCalledWith(pulled);
-    });
-
-    it('does not touch embeddings when the sync pulled nothing', async () => {
-      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-nopull-'));
-      const srv = new PrivateJournalServer({ dataPath: dir, remote: 'file:///nonexistent.git' });
-
-      jest.spyOn((srv as any).git, 'ensureRepo').mockResolvedValue(undefined);
-      jest.spyOn((srv as any).git, 'pull').mockResolvedValue([]);
-      jest.spyOn((srv as unknown as { git: { commitAndPush: () => Promise<string[]> } }).git, 'commitAndPush')
-        .mockResolvedValue([]);
-      const backfillPaths = jest.spyOn(SearchService.prototype, 'backfillPaths');
-
-      await srv.handleWrite({ content: 'local note' });
-
-      expect(backfillPaths).not.toHaveBeenCalled();
-    });
-
-    it('still succeeds when a synced-entry embedding fails', async () => {
-      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-embfail-'));
-      const srv = new PrivateJournalServer({ dataPath: dir, remote: 'file:///nonexistent.git' });
-
-      jest.spyOn((srv as any).git, 'ensureRepo').mockResolvedValue(undefined);
-      jest.spyOn((srv as any).git, 'pull').mockResolvedValue([]);
-      jest.spyOn((srv as unknown as { git: { commitAndPush: () => Promise<string[]> } }).git, 'commitAndPush')
-        .mockResolvedValue([path.join(dir, 'x.md')]);
-      jest.spyOn(SearchService.prototype, 'backfillPaths')
-        .mockRejectedValue(new Error('embedding exploded'));
-
-      const result = await srv.handleWrite({ content: 'still works' });
-      expect(result.path).toContain('.md');
-    });
-
-    it('still succeeds when commitAndPush rejects', async () => {
-      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-fail-'));
-      const srv = new PrivateJournalServer({ dataPath: dir, remote: 'file:///nonexistent.git' });
-
-      jest.spyOn((srv as any).git, 'ensureRepo').mockResolvedValue(undefined);
-      jest.spyOn((srv as any).git, 'pull').mockResolvedValue([]);
-      jest.spyOn((srv as unknown as { git: { commitAndPush: () => Promise<void> } }).git, 'commitAndPush')
-        .mockRejectedValue(new Error('remote exploded'));
-
-      const result = await srv.handleWrite({ content: 'still works' });
-      expect(result.path).toContain('.md');
-    });
-
-    it('surfaces an app-update message when sync is blocked by a newer data version', async () => {
-      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-version-blocked-'));
-      const srv = new PrivateJournalServer({ dataPath: dir, remote: 'file:///nonexistent.git' });
-
-      jest.spyOn((srv as any).git, 'ensureRepo').mockResolvedValue(undefined);
-      jest.spyOn((srv as any).git, 'pull').mockResolvedValue([]);
-      jest.spyOn((srv as unknown as { git: { commitAndPush: () => Promise<void> } }).git, 'commitAndPush')
-        .mockRejectedValue(new DataVersionError('Journal data version 2 is newer than this app supports (1). Update the app.'));
-
-      await expect(srv.handleWrite({ content: 'blocked note' }))
-        .rejects.toThrow('Update the app.');
+      expect(mockLaunchBackgroundSync).not.toHaveBeenCalled();
     });
   });
 });

@@ -9,6 +9,9 @@ describe('bin/private-journal-mcp launcher', () => {
     await fs.mkdir(path.join(fixture, 'bin'));
     await fs.mkdir(path.join(fixture, 'dist'));
     await fs.mkdir(path.join(fixture, 'fake-bin'));
+    for (const dep of ['@modelcontextprotocol/sdk', '@huggingface/transformers', 'zod']) {
+      await fs.mkdir(path.join(fixture, 'node_modules', dep), { recursive: true });
+    }
 
     await fs.copyFile(
       path.join(process.cwd(), 'bin', 'private-journal-mcp'),
@@ -25,7 +28,7 @@ describe('bin/private-journal-mcp launcher', () => {
       [
         "const fs = require('fs');",
         "const path = require('path');",
-        "for (const dep of ['@modelcontextprotocol/sdk', '@huggingface/transformers', 'zod']) {",
+        "for (const dep of ['@modelcontextprotocol/sdk', '@huggingface/transformers', 'zod', 'sqlite-vec']) {",
         "  if (!fs.existsSync(path.join(__dirname, '..', 'node_modules', dep))) {",
         "    throw new Error(`missing ${dep}`);",
         '  }',
@@ -44,7 +47,7 @@ describe('bin/private-journal-mcp launcher', () => {
         "const fs = require('fs');",
         "const path = require('path');",
         "fs.writeFileSync(path.join(process.cwd(), 'npm-called'), process.argv.slice(2).join(' '));",
-        "for (const dep of ['@modelcontextprotocol/sdk', '@huggingface/transformers', 'zod']) {",
+        "for (const dep of ['sqlite-vec']) {",
         "  fs.mkdirSync(path.join(process.cwd(), 'node_modules', dep), { recursive: true });",
         '}',
         '',

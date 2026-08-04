@@ -46,9 +46,9 @@ const journal_1 = require("./journal");
 const migrations_1 = require("./migrations");
 const paths_1 = require("./paths");
 const search_1 = require("./search");
+const sync_launcher_1 = require("./sync-launcher");
 const types_1 = require("./types");
 const DEFAULT_SECTION = 'observations';
-const SYNC_DEADLINE_MS = 15000;
 // 잘못된 limit이 응답을 폭발시키지 않도록 스키마에서 막는다. 음수는 slice로
 // 코퍼스 전체가 새고, 과대값은 컨텍스트를 넘긴다.
 const boundedLimit = zod_1.z.number().int().positive().max(search_1.MAX_SEARCH_LIMIT).optional();
@@ -89,12 +89,14 @@ class PrivateJournalServer {
     search;
     git;
     migrations;
+    remote;
     constructor(opts = {}) {
         this.dataPath = opts.dataPath ?? (0, paths_1.resolveDataPath)();
         const embeddings = embeddings_1.EmbeddingService.getInstance();
         this.journal = new journal_1.JournalManager(this.dataPath, embeddings);
         this.search = new search_1.SearchService(this.dataPath, embeddings);
-        this.git = new git_sync_1.GitSync(this.dataPath, (0, paths_1.resolveGitRemote)(opts.remote));
+        this.remote = (0, paths_1.resolveGitRemote)(opts.remote);
+        this.git = new git_sync_1.GitSync(this.dataPath, this.remote);
         this.migrations = new migrations_1.MigrationManager(this.dataPath);
     }
     async prepareData() {
@@ -112,47 +114,12 @@ class PrivateJournalServer {
         if (!this.journal.hasContent(sections)) {
             throw new Error('At least one journal section must have content.');
         }
-        await this.prepareData();
+        await this.migrations.run();
         const entryPath = await this.journal.write(sections);
-        // 동기화로 들어온 원격 엔트리는 임베딩이 없어 검색에서 조용히 빠진다
-        // (.embedding은 git 추적 대상이 아니다). 동기화가 건드린 경로만 즉시
-        // 임베딩해서 다음 재시작까지 기다리지 않게 한다. 방금 쓴 로컬 엔트리도
-        // 함께 보고되지만 이미 임베딩이 있어 건너뛴다.
-        const sync = this.git
-            .commitAndPush(`journal: ${new Date().toISOString()}`, migrations_1.CURRENT_DATA_VERSION)
-            .then((synced) => this.embedSynced(synced))
-            .catch((error) => {
-            if (error instanceof migrations_1.DataVersionError)
-                throw error;
-            console.error('[private-journal] commitAndPush failed (best-effort):', error);
-        });
-        let timer;
-        const deadline = new Promise((resolve) => {
-            timer = setTimeout(() => {
-                console.error('[private-journal] sync exceeded 15s; continuing in background');
-                resolve();
-            }, SYNC_DEADLINE_MS);
-        });
-        try {
-            await Promise.race([sync, deadline]);
-        }
-        finally {
-            clearTimeout(timer);
-        }
+        await this.search.indexPath(entryPath);
+        if (this.git.enabled)
+            (0, sync_launcher_1.launchBackgroundSync)(this.dataPath, this.remote);
         return { path: entryPath };
-    }
-    async embedSynced(synced) {
-        if (synced.length === 0)
-            return;
-        try {
-            const created = await this.search.backfillPaths(synced);
-            if (created > 0) {
-                console.error(`[private-journal] embedded ${created} synced entry(ies)`);
-            }
-        }
-        catch (error) {
-            console.error('[private-journal] embedding synced entries failed (best-effort):', error);
-        }
     }
     async handleSearch(args) {
         return this.search.search(args.query, {
@@ -183,10 +150,17 @@ class PrivateJournalServer {
         return this.search.listRecent(args);
     }
     async initialize() {
-        await this.prepareData();
-        await this.search.backfill().catch((error) => {
-            console.error('[private-journal] backfill failed (best-effort):', error);
-        });
+        const pulled = await this.prepareData();
+        if (this.search.needsInitialBackfill()) {
+            await this.search.backfill().catch((error) => {
+                console.error('[private-journal] initial index backfill failed (best-effort):', error);
+            });
+        }
+        else if (pulled.length > 0) {
+            await this.search.backfillPaths(pulled).catch((error) => {
+                console.error('[private-journal] pulled index update failed (best-effort):', error);
+            });
+        }
     }
     async run() {
         await this.initialize();
