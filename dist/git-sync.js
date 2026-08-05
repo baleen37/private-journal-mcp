@@ -34,6 +34,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.GitSync = void 0;
+exports.resolveGitIdentityEnv = resolveGitIdentityEnv;
 exports.resolveGitTimeoutMs = resolveGitTimeoutMs;
 exports.chooseConflictWinner = chooseConflictWinner;
 const child_process_1 = require("child_process");
@@ -43,7 +44,23 @@ const path = __importStar(require("path"));
 const journal_1 = require("./journal");
 const migrations_1 = require("./migrations");
 const run = (0, util_1.promisify)(child_process_1.execFile);
-const gitEnv = { ...process.env, GIT_EDITOR: process.env.GIT_EDITOR ?? 'true' };
+const DEFAULT_GIT_NAME = 'journal';
+const DEFAULT_GIT_EMAIL = 'journal@localhost';
+function resolveGitIdentityEnv(env = process.env) {
+    const name = env.GIT_NAME?.trim() || DEFAULT_GIT_NAME;
+    const email = env.GIT_EMAIL?.trim() || DEFAULT_GIT_EMAIL;
+    return {
+        GIT_AUTHOR_NAME: name,
+        GIT_AUTHOR_EMAIL: email,
+        GIT_COMMITTER_NAME: name,
+        GIT_COMMITTER_EMAIL: email,
+    };
+}
+const gitEnv = {
+    ...process.env,
+    ...resolveGitIdentityEnv(process.env),
+    GIT_EDITOR: process.env.GIT_EDITOR ?? 'true',
+};
 const DEFAULT_GIT_TIMEOUT_MS = 10000;
 const LOCK_FILENAME = '.private-journal-sync.lock';
 const EMBEDDING_EXT = '.embedding';

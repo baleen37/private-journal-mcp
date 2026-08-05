@@ -10,7 +10,31 @@ import {
 } from './migrations';
 
 const run = promisify(execFile);
-const gitEnv = { ...process.env, GIT_EDITOR: process.env.GIT_EDITOR ?? 'true' };
+
+const DEFAULT_GIT_NAME = 'journal';
+const DEFAULT_GIT_EMAIL = 'journal@localhost';
+
+export type GitIdentityEnv = Pick<
+  NodeJS.ProcessEnv,
+  'GIT_AUTHOR_NAME' | 'GIT_AUTHOR_EMAIL' | 'GIT_COMMITTER_NAME' | 'GIT_COMMITTER_EMAIL'
+>;
+
+export function resolveGitIdentityEnv(env: NodeJS.ProcessEnv = process.env): GitIdentityEnv {
+  const name = env.GIT_NAME?.trim() || DEFAULT_GIT_NAME;
+  const email = env.GIT_EMAIL?.trim() || DEFAULT_GIT_EMAIL;
+  return {
+    GIT_AUTHOR_NAME: name,
+    GIT_AUTHOR_EMAIL: email,
+    GIT_COMMITTER_NAME: name,
+    GIT_COMMITTER_EMAIL: email,
+  };
+}
+
+const gitEnv = {
+  ...process.env,
+  ...resolveGitIdentityEnv(process.env),
+  GIT_EDITOR: process.env.GIT_EDITOR ?? 'true',
+};
 
 const DEFAULT_GIT_TIMEOUT_MS = 10000;
 const LOCK_FILENAME = '.private-journal-sync.lock';

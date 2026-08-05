@@ -1,4 +1,9 @@
-import { chooseConflictWinner, GitSync, resolveGitTimeoutMs } from '../src/git-sync';
+import {
+  chooseConflictWinner,
+  GitSync,
+  resolveGitIdentityEnv,
+  resolveGitTimeoutMs,
+} from '../src/git-sync';
 import { DataVersionError } from '../src/migrations';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -7,6 +12,29 @@ import * as path from 'path';
 import * as os from 'os';
 
 const run = promisify(execFile);
+
+describe('resolveGitIdentityEnv', () => {
+  it('uses the journal identity by default', () => {
+    expect(resolveGitIdentityEnv({})).toEqual({
+      GIT_AUTHOR_NAME: 'journal',
+      GIT_AUTHOR_EMAIL: 'journal@localhost',
+      GIT_COMMITTER_NAME: 'journal',
+      GIT_COMMITTER_EMAIL: 'journal@localhost',
+    });
+  });
+
+  it('maps the public identity variables to author and committer fields', () => {
+    expect(resolveGitIdentityEnv({
+      GIT_NAME: 'Jito',
+      GIT_EMAIL: 'jito@example.com',
+    })).toEqual({
+      GIT_AUTHOR_NAME: 'Jito',
+      GIT_AUTHOR_EMAIL: 'jito@example.com',
+      GIT_COMMITTER_NAME: 'Jito',
+      GIT_COMMITTER_EMAIL: 'jito@example.com',
+    });
+  });
+});
 
 function md(ts: number, body = 'x') {
   return `---\ntitle: "t"\ndate: d\ntimestamp: ${ts}\n---\n\n## Reflections\n\n${body}\n`;

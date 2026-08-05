@@ -194,6 +194,24 @@ Behavior:
 - `node dist/index.js sync` pulls and pushes any pending commits before a
   session starts.
 
+### Git commit identity
+
+Automatic sync commits use `journal <journal@localhost>` by default. Override
+the identity for the MCP process with `GIT_NAME` and `GIT_EMAIL`:
+
+```json
+{
+  "env": {
+    "GIT_NAME": "your-name",
+    "GIT_EMAIL": "your-github-email@example.com"
+  }
+}
+```
+
+The same values are used for both the Git author and committer. Use an email
+linked to your GitHub account if these commits should count toward your
+contribution graph.
+
 ### Data-format compatibility
 
 When the same journal is used on multiple computers, an app that upgrades the
