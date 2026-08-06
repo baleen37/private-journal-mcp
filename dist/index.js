@@ -23,11 +23,11 @@ async function runSync(opts = {}) {
         await git.ensureRepo();
         pulled = await git.pull(migrations_1.CURRENT_DATA_VERSION);
     }
-    await migrations.run();
+    const migrated = await migrations.run();
     const search = new search_1.SearchService(dataPath, embeddings_1.EmbeddingService.getInstance());
     // 인덱스가 아직 전체 원본과 동기화되지 않은 경우에만 초기 전체 walk를 실행한다.
     // 완전한 인덱스는 Git이 알려준 변경 경로만 처리한다.
-    const work = search.needsInitialBackfill()
+    const work = search.needsInitialBackfill() || migrated
         ? search.backfill()
         : pulled.length > 0 ? search.backfillPaths(pulled) : Promise.resolve(0);
     await work.catch((error) => {

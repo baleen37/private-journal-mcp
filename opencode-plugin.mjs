@@ -15,7 +15,7 @@ export function createTools(journal) {
   return {
     write_journal: {
       description: [
-        'Write a durable private journal entry. section defaults to observations.',
+        'Write a durable private journal entry with a meaningful title. section defaults to observations.',
         [
           'Pick the section by what the note is about:',
           '- project_notes: current repo/task state, decisions, and where work stands.',
@@ -28,6 +28,7 @@ export function createTools(journal) {
         'Returns a JSON object with the written file path.',
       ].join('\n\n'),
       args: {
+        title: z.string().trim().min(1),
         content: z.string(),
         section,
       },

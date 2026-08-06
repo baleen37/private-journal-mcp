@@ -9,10 +9,10 @@ import { PrivateJournalServer } from '../src/server';
 import { launchBackgroundSync } from '../src/sync-launcher';
 import { JOURNAL_SECTIONS } from '../src/types';
 
-const mockMigrationsRun = jest.fn().mockResolvedValue(undefined);
+const mockMigrationsRun = jest.fn().mockResolvedValue(false);
 
 jest.mock('../src/migrations', () => ({
-  CURRENT_DATA_VERSION: 1,
+  CURRENT_DATA_VERSION: 2,
   DataVersionError: class DataVersionError extends Error {},
   MigrationManager: jest.fn().mockImplementation(() => ({ run: mockMigrationsRun })),
 }));
@@ -97,8 +97,17 @@ describe('PrivateJournalServer handlers', () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-'));
     const srv = new PrivateJournalServer({ dataPath: dir });
 
-    await expect(srv.handleWrite({ content: '   ' })).rejects.toThrow(
+    await expect(srv.handleWrite({ title: '빈 내용', content: '   ' })).rejects.toThrow(
       'At least one journal section must have content.',
+    );
+  });
+
+  it('handleWrite rejects an empty title', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-'));
+    const srv = new PrivateJournalServer({ dataPath: dir });
+
+    await expect(srv.handleWrite({ title: '   ', content: '내용' })).rejects.toThrow(
+      'Journal title must not be empty.',
     );
   });
 
@@ -108,6 +117,7 @@ describe('PrivateJournalServer handlers', () => {
     const srv = new PrivateJournalServer({ dataPath: dir });
 
     const { path: entryPath } = await srv.handleWrite({
+      title: '회고 기록',
       content: '회고 내용',
       section: 'reflections',
     });
@@ -225,12 +235,14 @@ describe('PrivateJournalServer handlers', () => {
     const searchSection = searchSchema?.section;
 
     expect(writeSchema?.content).toBeDefined();
+    expect(writeSchema?.title).toBeDefined();
     expect(writeSchema?.section).toBeDefined();
     expect(writeSchema?.reflections).toBeUndefined();
     expect(writeSchema?.technical_insights).toBeUndefined();
     expect(searchSchema?.section).toBeDefined();
     expect(searchSchema?.sections).toBeUndefined();
     expect(byName.write_journal.config.description).toContain('section defaults to observations');
+    expect(byName.write_journal.config.description).toContain('meaningful title');
     expect(byName.search_journal.config.description).toContain('snippet');
     expect(byName.read_journal.config.description).toContain('full');
     expect(byName.list_journal.config.description).toContain('recent');
@@ -276,7 +288,7 @@ describe('PrivateJournalServer handlers', () => {
 
     const tools = await collectRegisteredTools(srv);
     const writeTool = tools.find((tool) => tool.name === 'write_journal')!;
-    const result = await writeTool.callback({ content: 'note', section: 'reflections' });
+    const result = await writeTool.callback({ title: '테스트 제목', content: 'note', section: 'reflections' });
 
     expect(JSON.parse(result.content[0].text)).toEqual({ path: '/tmp/journal.md' });
   });
@@ -339,7 +351,7 @@ describe('PrivateJournalServer handlers', () => {
     jest.spyOn(EmbeddingService.getInstance(), 'generateEmbedding').mockResolvedValue(testVector(0.1, 0.2));
     const srv = new PrivateJournalServer({ dataPath: dir });
 
-    await srv.handleWrite({ content: '관찰', section: 'observations' });
+    await srv.handleWrite({ title: '관찰 기록', content: '관찰', section: 'observations' });
     const list = await srv.handleList({ days: 3650 });
 
     expect(list).toHaveLength(1);
@@ -392,6 +404,22 @@ describe('PrivateJournalServer handlers', () => {
     expect(backfillPaths).not.toHaveBeenCalled();
   });
 
+  it('backfills a complete index after data migration', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-init-migrated-'));
+    const srv = new PrivateJournalServer({ dataPath: dir, remote: 'resolved.git' });
+    jest.spyOn((srv as any).git, 'ensureRepo').mockResolvedValue(undefined);
+    jest.spyOn((srv as any).git, 'pull').mockResolvedValue([]);
+    jest.spyOn(SearchService.prototype, 'needsInitialBackfill').mockReturnValue(false);
+    const backfill = jest.spyOn(SearchService.prototype, 'backfill').mockResolvedValue(1);
+    const backfillPaths = jest.spyOn(SearchService.prototype, 'backfillPaths').mockResolvedValue(0);
+    mockMigrationsRun.mockResolvedValueOnce(true);
+
+    await (srv as any).initialize();
+
+    expect(backfill).toHaveBeenCalledTimes(1);
+    expect(backfillPaths).not.toHaveBeenCalled();
+  });
+
   it('run performs ensureRepo, pull, and migration before connect', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-'));
     const srv = new PrivateJournalServer({ dataPath: dir, remote: 'resolved.git' });
@@ -428,7 +456,7 @@ describe('PrivateJournalServer handlers', () => {
       const pull = jest.spyOn((srv as any).git, 'pull');
       const commitAndPush = jest.spyOn((srv as any).git, 'commitAndPush');
 
-      const result = await srv.handleWrite({ content: 'sync test' });
+      const result = await srv.handleWrite({ title: '동기화 테스트', content: 'sync test' });
 
       expect(result.path).toContain('.md');
       await expect(fs.access(result.path)).resolves.toBeUndefined();
@@ -441,7 +469,7 @@ describe('PrivateJournalServer handlers', () => {
       const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'srv-local-'));
       const srv = new PrivateJournalServer({ dataPath: dir });
 
-      await srv.handleWrite({ content: 'local note' });
+      await srv.handleWrite({ title: '로컬 기록', content: 'local note' });
 
       expect(mockLaunchBackgroundSync).not.toHaveBeenCalled();
     });

@@ -12,10 +12,11 @@ describe('JournalManager.write', () => {
 
     const jm = new JournalManager(dir, emb);
     const when = new Date('2026-06-25T01:02:03.000Z');
-    const mdPath = await jm.write({ reflections: '오늘의 회고' }, when);
+    const mdPath = await jm.write({ reflections: '오늘의 회고' }, '오늘의 회고', when);
 
     expect(mdPath.endsWith('.md')).toBe(true);
     const md = await fs.readFile(mdPath, 'utf8');
+    expect(md).toContain('title: 오늘의 회고');
     expect(md).toContain('오늘의 회고');
     expect(emb.generateEmbedding).not.toHaveBeenCalled();
   });
@@ -32,7 +33,7 @@ describe('JournalManager.write', () => {
     const emb = EmbeddingService.getInstance();
     jest.spyOn(emb, 'generateEmbedding').mockRejectedValue(new Error('model fail'));
     const jm = new JournalManager(dir, emb);
-    const mdPath = await jm.write({ reflections: 'x' });
+    const mdPath = await jm.write({ reflections: 'x' }, '테스트 기록');
     expect(mdPath.endsWith('.md')).toBe(true);
   });
 });

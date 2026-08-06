@@ -1,11 +1,13 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { frontmatterCreatedAtMigration } from './migration/data/001-frontmatter-created-at';
 
-export const CURRENT_DATA_VERSION = 1;
+export const CURRENT_DATA_VERSION = 2;
 export const DATA_VERSION_FILENAME = '.private-journal-version.json';
 export const MIGRATION_TRANSACTION_FILENAME = '.private-journal-migration-transaction.json';
 
 const SYNC_LOCK_FILENAME = '.private-journal-sync.lock';
+const DATA_MIGRATIONS: Migration[] = [frontmatterCreatedAtMigration];
 
 type MigrationTransaction = {
   state: 'prepared' | 'backed-up' | 'activated';
@@ -89,7 +91,7 @@ export async function runRevisionMigrations<TContext>(
 export class MigrationManager {
   constructor(
     private readonly dataPath: string,
-    private readonly migrations: Migration[] = [],
+    private readonly migrations: Migration[] = DATA_MIGRATIONS,
     private readonly currentVersion: number = CURRENT_DATA_VERSION,
   ) {}
 
@@ -125,8 +127,9 @@ export class MigrationManager {
     return (metadata as { version: number }).version;
   }
 
-  async run(): Promise<void> {
+  async run(): Promise<boolean> {
     await this.recoverInterruptedActivation();
+    await fs.mkdir(this.dataRootPath(), { recursive: true });
 
     if (!Number.isInteger(this.currentVersion) || this.currentVersion <= 0) {
       throw new DataVersionError('Current data version must be a positive integer');
@@ -143,7 +146,7 @@ export class MigrationManager {
 
     if (version === this.currentVersion) {
       if (!hasVersionFile) await this.writeVersion(this.dataRootPath(), version);
-      return;
+      return false;
     }
 
     const stagePath = await this.createStage();
@@ -172,6 +175,7 @@ export class MigrationManager {
     }
 
     await this.activateStage(stagePath);
+    return true;
   }
 
   private dataRootPath(): string {

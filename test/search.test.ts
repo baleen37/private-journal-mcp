@@ -18,8 +18,8 @@ async function seed() {
     if (text.includes('고양이')) return vector(1);
     return vector(0, 1);
   });
-  await jm.write({ reflections: '고양이에 대한 기록' }, new Date('2026-06-20T10:00:00Z'));
-  await jm.write({ observations: '강아지 관찰' }, new Date('2026-06-24T10:00:00Z'));
+  await jm.write({ reflections: '고양이에 대한 기록' }, '고양이 기록', new Date('2026-06-20T10:00:00Z'));
+  await jm.write({ observations: '강아지 관찰' }, '강아지 관찰', new Date('2026-06-24T10:00:00Z'));
   const index = new SearchService(dir, emb);
   await index.backfill();
   index.close();
@@ -108,6 +108,7 @@ describe('SearchService.listRecent', () => {
     for (let day = 1; day <= 8; day++) {
       await jm.write(
         { observations: `entry ${day}` },
+        `검색 기록 ${day}`,
         new Date(`2026-06-0${day}T10:00:00Z`),
       );
     }
@@ -127,6 +128,7 @@ describe('SearchService.listRecent', () => {
     for (let day = 1; day <= 8; day++) {
       await jm.write(
         { observations: `entry ${day}` },
+        `경로 기록 ${day}`,
         new Date(`2026-06-0${day}T10:00:00Z`),
       );
     }
@@ -143,8 +145,8 @@ describe('SearchService.listRecent', () => {
     const { dir, emb } = await seed();
     const jm = new JournalManager(dir, emb);
     const old = new Date(Date.now() - 400 * 24 * 60 * 60 * 1000);
-    await jm.write({ observations: 'ancient' }, old);
-    await jm.write({ observations: 'fresh' }, new Date());
+    await jm.write({ observations: 'ancient' }, '오래된 기록', old);
+    await jm.write({ observations: 'fresh' }, '최근 기록', new Date());
 
     const svc = new SearchService(dir, emb);
     await svc.backfill();
@@ -169,7 +171,7 @@ describe('SearchService.backfill', () => {
   it('embeds only the given paths without scanning the corpus', async () => {
     const { dir, emb } = await seed();
     const jm = new JournalManager(dir, emb);
-    const target = await jm.write({ observations: 'pulled entry' }, new Date('2026-07-30T10:00:00Z'));
+    const target = await jm.write({ observations: 'pulled entry' }, '가져온 기록', new Date('2026-07-30T10:00:00Z'));
 
     const svc = new SearchService(dir, emb);
     const listSpy = jest.spyOn(svc, 'listEntryFiles');
@@ -186,7 +188,7 @@ describe('SearchService.backfill', () => {
   it('ignores paths outside dataPath and paths that already have embeddings', async () => {
     const { dir, emb } = await seed();
     const jm = new JournalManager(dir, emb);
-    const kept = await jm.write({ observations: 'already embedded' }, new Date('2026-07-30T11:00:00Z'));
+    const kept = await jm.write({ observations: 'already embedded' }, '이미 임베딩된 기록', new Date('2026-07-30T11:00:00Z'));
     const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), 'srch-outside-bf-'));
     const outside = path.join(outsideDir, 'evil.md');
     await fs.writeFile(outside, '## Reflections\n\nsecret\n', 'utf8');

@@ -92,6 +92,39 @@ describe('GitSync (disabled when no remote)', () => {
   });
 });
 
+describe('GitSync derived index files', () => {
+  it('untracks SQLite index files while keeping local copies and version metadata', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gs-derived-'));
+    const remote = path.join(dir, 'remote.git');
+    await run('git', ['init'], { cwd: dir });
+    await run('git', ['remote', 'add', 'origin', remote], { cwd: dir });
+    await configureGitIdentity(dir);
+
+    const derivedFiles = [
+      '.private-journal-index.sqlite',
+      '.private-journal-index.sqlite-wal',
+      '.private-journal-index.sqlite-shm',
+    ];
+    await Promise.all([
+      ...derivedFiles.map((file) => fs.writeFile(path.join(dir, file), 'derived', 'utf8')),
+      fs.writeFile(path.join(dir, '.private-journal-version.json'), '{"version":2}\n', 'utf8'),
+    ]);
+    await run('git', ['add', '--all'], { cwd: dir });
+    await run('git', ['commit', '-m', 'track derived files'], { cwd: dir });
+
+    await new GitSync(dir, remote).ensureRepo();
+
+    const { stdout: tracked } = await run('git', ['ls-files', '--'], { cwd: dir });
+    for (const file of derivedFiles) expect(tracked).not.toContain(file);
+    expect(tracked).toContain('.private-journal-version.json');
+    for (const file of derivedFiles) {
+      await expect(fs.access(path.join(dir, file))).resolves.toBeUndefined();
+    }
+    const exclude = await fs.readFile(path.join(dir, '.git', 'info', 'exclude'), 'utf8');
+    expect(exclude).toContain('.private-journal-index.sqlite-wal');
+  });
+});
+
 describe('GitSync branch recovery', () => {
   it('uses the remote default branch when a rebase leaves HEAD detached', async () => {
     const { base, remote } = await createSeedRemote('gs-detached-');

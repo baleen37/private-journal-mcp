@@ -161,7 +161,7 @@ class SearchService {
             this.index.upsert({
                 path: absolute,
                 title: frontmatter.title,
-                date: frontmatter.date,
+                date: frontmatter.created_at,
                 timestamp: frontmatter.timestamp,
                 sections: (0, journal_1.parseSections)(md),
                 excerpt: text.slice(0, 200),
