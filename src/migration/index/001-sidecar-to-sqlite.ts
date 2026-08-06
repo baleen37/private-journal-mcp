@@ -160,7 +160,7 @@ async function buildEntry(
     entry: {
       path: mdPath,
       title: frontmatter.title,
-      date: frontmatter.date,
+      date: frontmatter.created_at,
       timestamp: frontmatter.timestamp,
       sections,
       excerpt: text.slice(0, 200),

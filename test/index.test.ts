@@ -45,10 +45,10 @@ jest.mock('../src/git-sync', () => ({
   })),
 }));
 
-const mockMigrationsRun = jest.fn().mockResolvedValue(undefined);
+const mockMigrationsRun = jest.fn().mockResolvedValue(false);
 
 jest.mock('../src/migrations', () => ({
-  CURRENT_DATA_VERSION: 1,
+  CURRENT_DATA_VERSION: 2,
   MigrationManager: jest.fn().mockImplementation(() => ({ run: mockMigrationsRun })),
 }));
 
@@ -194,7 +194,7 @@ describe('runSync', () => {
     expect(mockMigrationsRun.mock.invocationCallOrder[0]).toBeLessThan(commitAndPush.mock.invocationCallOrder[0]);
     expect(commitAndPush).toHaveBeenCalledWith(
       expect.any(String),
-      1,
+      2,
       { remoteAlreadyPulled: true },
     );
   });

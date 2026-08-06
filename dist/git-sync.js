@@ -233,7 +233,7 @@ class GitSync {
         // .embedding은 md에서 언제든 재생성되는 파생물이고(1000건 약 25초),
         // 부동소수 JSON이라 델타 압축이 거의 안 먹어 커밋마다 통째로 쌓인다.
         // 히스토리 증가는 영구적이지만 재생성 비용은 일회성이라 제외가 유리하다.
-        // 이미 추적 중인 임베딩은 pruneTrackedEmbeddings()가 인덱스에서 뺀다.
+        // 이미 추적 중인 파생 파일은 pruneTrackedDerivedFiles()가 인덱스에서 뺀다.
         const excludePath = path.join(this.dataPath, '.git', 'info', 'exclude');
         try {
             await fs.mkdir(path.dirname(excludePath), { recursive: true });
@@ -256,21 +256,29 @@ class GitSync {
         catch (err) {
             logGitFailure('[private-journal] git exclude setup failed (best-effort):', err);
         }
-        await this.pruneTrackedEmbeddings();
+        await this.pruneTrackedDerivedFiles();
     }
-    // 과거 커밋에 이미 들어간 .embedding을 인덱스에서만 제거한다. 작업 트리
+    // 과거 커밋에 이미 들어간 파생 파일을 인덱스에서만 제거한다. 작업 트리
     // 파일은 남겨서 검색이 즉시 계속 동작하고, 다음 커밋부터 추적이 끊긴다.
-    async pruneTrackedEmbeddings() {
+    async pruneTrackedDerivedFiles() {
         try {
-            const { stdout } = await this.git(['ls-files', '-z', '--', `*${EMBEDDING_EXT}`]);
+            const { stdout } = await this.git([
+                'ls-files',
+                '-z',
+                '--',
+                `*${EMBEDDING_EXT}`,
+                INDEX_FILE,
+                `${INDEX_FILE}-wal`,
+                `${INDEX_FILE}-shm`,
+            ]);
             const tracked = stdout.split('\0').filter((entry) => entry.length > 0);
             if (tracked.length === 0)
                 return;
             await this.git(['rm', '--cached', '--quiet', '--', ...tracked]);
-            console.error(`[private-journal] untracked ${tracked.length} derived .embedding file(s); local copies kept`);
+            console.error(`[private-journal] untracked ${tracked.length} derived file(s); local copies kept`);
         }
         catch (err) {
-            logGitFailure('[private-journal] embedding untracking failed (best-effort):', err);
+            logGitFailure('[private-journal] derived file untracking failed (best-effort):', err);
         }
     }
     async pathExists(targetPath) {

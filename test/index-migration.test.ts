@@ -24,7 +24,7 @@ async function writeMarkdown(
 ): Promise<string> {
   const mdPath = path.join(dataPath, name);
   await fs.mkdir(path.dirname(mdPath), { recursive: true });
-  await fs.writeFile(mdPath, renderEntry({ reflections: content }, when), 'utf8');
+  await fs.writeFile(mdPath, renderEntry({ reflections: content }, 'Legacy index entry', when), 'utf8');
   return mdPath;
 }
 

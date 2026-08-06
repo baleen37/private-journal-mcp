@@ -65,7 +65,7 @@ describe('OpenCode plugin', () => {
           '  return [1, 0, ...Array(382).fill(0)];',
           '};',
           'const hooks = await pluginModule.server({});',
-          "const write = JSON.parse(await hooks.tool.write_journal.execute({ content: 'native plugin execution', section: 'technical_insights' }));",
+          "const write = JSON.parse(await hooks.tool.write_journal.execute({ title: 'Native plugin execution', content: 'native plugin execution', section: 'technical_insights' }));",
           "const search = await hooks.tool.search_journal.execute({ query: 'native plugin', limit: 1, section: 'technical_insights' });",
           'const read = JSON.parse(await hooks.tool.read_journal.execute({ path: write.path }));',
           'const list = JSON.parse(await hooks.tool.list_journal.execute({ limit: 1, days: 1 }));',
@@ -105,7 +105,7 @@ describe('OpenCode plugin', () => {
           "  handleRead: async (args) => { received.push(['read', args]); return { content: 'full entry' }; },",
           "  handleList: async (args) => { received.push(['list', args]); return [{ path: '/tmp/entry.md', title: 'Entry', date: '2026-08-03', timestamp: Date.parse('2026-08-03T00:00:00Z'), sections: ['technical_insights'] }]; },",
           '});',
-          "const write = await tools.write_journal.execute({ content: 'note', section: 'technical_insights' });",
+          "const write = await tools.write_journal.execute({ title: 'Plugin note', content: 'note', section: 'technical_insights' });",
           "const search = await tools.search_journal.execute({ query: 'plugin', limit: 3, section: 'technical_insights', minScore: 0.8 });",
           "const read = await tools.read_journal.execute({ path: '/tmp/entry.md' });",
           'const list = await tools.list_journal.execute({ limit: 2, days: 7 });',
@@ -121,7 +121,7 @@ describe('OpenCode plugin', () => {
     expect(result.read).toEqual({ content: 'full entry' });
     expect(result.list).toHaveLength(1);
     expect(result.received).toEqual([
-      ['write', { content: 'note', section: 'technical_insights' }],
+      ['write', { title: 'Plugin note', content: 'note', section: 'technical_insights' }],
       ['search', { query: 'plugin', limit: 3, section: 'technical_insights', minScore: 0.8 }],
       ['read', { path: '/tmp/entry.md' }],
       ['list', { limit: 2, days: 7 }],

@@ -8,24 +8,23 @@ import {
   type Migration,
 } from '../src/migrations';
 
-it('initializes a versionless existing data directory at version 1', async () => {
+it('migrates a versionless existing data directory to version 2', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'migration-'));
-  await fs.writeFile(path.join(dir, 'entry.md'), '# existing\n', 'utf8');
 
-  await new MigrationManager(dir).run();
+  await expect(new MigrationManager(dir).run()).resolves.toBe(true);
 
   await expect(fs.readFile(path.join(dir, '.private-journal-version.json'), 'utf8'))
-    .resolves.toBe('{"version":1}\n');
+    .resolves.toBe('{"version":2}\n');
 });
 
 it('does not rewrite an existing current version file', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'migration-'));
   const versionPath = path.join(dir, '.private-journal-version.json');
-  await fs.writeFile(versionPath, '{"version":1}\n', 'utf8');
+  await fs.writeFile(versionPath, '{"version":2}\n', 'utf8');
   await fs.chmod(versionPath, 0o444);
 
   try {
-    await expect(new MigrationManager(dir).run()).resolves.toBeUndefined();
+    await expect(new MigrationManager(dir).run()).resolves.toBe(false);
   } finally {
     await fs.chmod(versionPath, 0o644);
   }
@@ -58,10 +57,10 @@ it.each(['not json', '{"version":0}', '{"version":1.5}', '{"version":"2"}'])
 it('rejects future data without changing its version file', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'migration-'));
   const versionPath = path.join(dir, '.private-journal-version.json');
-  await fs.writeFile(versionPath, '{"version":2}\n', 'utf8');
+  await fs.writeFile(versionPath, '{"version":3}\n', 'utf8');
 
   await expect(new MigrationManager(dir).run()).rejects.toThrow('newer than this app');
-  await expect(fs.readFile(versionPath, 'utf8')).resolves.toBe('{"version":2}\n');
+  await expect(fs.readFile(versionPath, 'utf8')).resolves.toBe('{"version":3}\n');
 });
 
 it('rejects a missing consecutive migration without changing data', async () => {
@@ -171,7 +170,7 @@ it('restores the backup after an interrupted backed-up activation', async () => 
   const transactionPath = path.join(parent, MIGRATION_TRANSACTION_FILENAME);
   await Promise.all([fs.mkdir(dataPath), fs.mkdir(backupPath), fs.mkdir(stagePath)]);
   await fs.writeFile(path.join(backupPath, 'entry.md'), 'original', 'utf8');
-  await fs.writeFile(path.join(backupPath, '.private-journal-version.json'), '{"version":1}\n');
+  await fs.writeFile(path.join(backupPath, '.private-journal-version.json'), '{"version":2}\n');
   await fs.writeFile(path.join(stagePath, 'entry.md'), 'migrated', 'utf8');
   await fs.writeFile(transactionPath, JSON.stringify({
     state: 'backed-up', dataPath, backupPath, stagePath,

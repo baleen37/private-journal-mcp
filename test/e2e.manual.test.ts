@@ -36,8 +36,8 @@ const { PrivateJournalServer } = require(${JSON.stringify(path.join(process.cwd(
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'e2e-'));
   try {
     const srv = new PrivateJournalServer({ dataPath: dir });
-    await srv.handleWrite({ reflections: '오늘 검색 추천 시스템의 랭킹 모델을 개선했다' });
-    await srv.handleWrite({ observations: '날씨가 맑았다' });
+    await srv.handleWrite({ title: '검색 랭킹 모델 개선', content: '오늘 검색 추천 시스템의 랭킹 모델을 개선했다', section: 'reflections' });
+    await srv.handleWrite({ title: '맑은 날씨', content: '날씨가 맑았다', section: 'observations' });
     const results = await srv.handleSearch({ query: '랭킹 모델 개선', limit: 2 });
     process.stdout.write(JSON.stringify(results));
   } finally {

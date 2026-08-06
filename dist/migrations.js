@@ -38,10 +38,12 @@ exports.validateRevisionMigrations = validateRevisionMigrations;
 exports.runRevisionMigrations = runRevisionMigrations;
 const fs = __importStar(require("fs/promises"));
 const path = __importStar(require("path"));
-exports.CURRENT_DATA_VERSION = 1;
+const _001_frontmatter_created_at_1 = require("./migration/data/001-frontmatter-created-at");
+exports.CURRENT_DATA_VERSION = 2;
 exports.DATA_VERSION_FILENAME = '.private-journal-version.json';
 exports.MIGRATION_TRANSACTION_FILENAME = '.private-journal-migration-transaction.json';
 const SYNC_LOCK_FILENAME = '.private-journal-sync.lock';
+const DATA_MIGRATIONS = [_001_frontmatter_created_at_1.frontmatterCreatedAtMigration];
 class DataVersionError extends Error {
     constructor(message) {
         super(message);
@@ -82,7 +84,7 @@ class MigrationManager {
     dataPath;
     migrations;
     currentVersion;
-    constructor(dataPath, migrations = [], currentVersion = exports.CURRENT_DATA_VERSION) {
+    constructor(dataPath, migrations = DATA_MIGRATIONS, currentVersion = exports.CURRENT_DATA_VERSION) {
         this.dataPath = dataPath;
         this.migrations = migrations;
         this.currentVersion = currentVersion;
@@ -117,6 +119,7 @@ class MigrationManager {
     }
     async run() {
         await this.recoverInterruptedActivation();
+        await fs.mkdir(this.dataRootPath(), { recursive: true });
         if (!Number.isInteger(this.currentVersion) || this.currentVersion <= 0) {
             throw new DataVersionError('Current data version must be a positive integer');
         }
@@ -129,7 +132,7 @@ class MigrationManager {
         if (version === this.currentVersion) {
             if (!hasVersionFile)
                 await this.writeVersion(this.dataRootPath(), version);
-            return;
+            return false;
         }
         const stagePath = await this.createStage();
         try {
@@ -158,6 +161,7 @@ class MigrationManager {
             throw error;
         }
         await this.activateStage(stagePath);
+        return true;
     }
     dataRootPath() {
         return path.resolve(this.dataPath);

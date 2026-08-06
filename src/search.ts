@@ -131,7 +131,7 @@ export class SearchService {
       this.index.upsert({
         path: absolute,
         title: frontmatter.title,
-        date: frontmatter.date,
+        date: frontmatter.created_at,
         timestamp: frontmatter.timestamp,
         sections: parseSections(md),
         excerpt: text.slice(0, 200),

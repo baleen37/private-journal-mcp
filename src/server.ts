@@ -26,6 +26,7 @@ interface SearchArgs {
 }
 
 interface WriteJournalArgs {
+  title: string;
   content: string;
   section?: JournalSection;
 }
@@ -99,33 +100,47 @@ export function formatSearchResults(args: SearchArgs, results: SearchResult[]): 
 
 export class PrivateJournalServer {
   private readonly dataPath: string;
+  private readonly embeddings: EmbeddingService;
   private readonly journal: JournalManager;
-  private readonly search: SearchService;
+  private search: SearchService;
   private readonly git: GitSync;
   private readonly migrations: MigrationManager;
   private readonly remote: string | undefined;
 
   constructor(opts: { dataPath?: string; remote?: string } = {}) {
     this.dataPath = opts.dataPath ?? resolveDataPath();
-    const embeddings = EmbeddingService.getInstance();
-    this.journal = new JournalManager(this.dataPath, embeddings);
-    this.search = new SearchService(this.dataPath, embeddings);
+    this.embeddings = EmbeddingService.getInstance();
+    this.journal = new JournalManager(this.dataPath, this.embeddings);
+    this.search = new SearchService(this.dataPath, this.embeddings);
     this.remote = resolveGitRemote(opts.remote);
     this.git = new GitSync(this.dataPath, this.remote);
     this.migrations = new MigrationManager(this.dataPath);
   }
 
-  private async prepareData(): Promise<string[]> {
+  private async prepareData(): Promise<{ pulled: string[]; migrated: boolean }> {
     let pulled: string[] = [];
     if (this.git.enabled) {
       await this.git.ensureRepo();
       pulled = await this.git.pull(CURRENT_DATA_VERSION);
     }
-    await this.migrations.run();
-    return pulled;
+    const migrated = await this.runMigrations();
+    return { pulled, migrated };
+  }
+
+  private async runMigrations(): Promise<boolean> {
+    const migrated = await this.migrations.run();
+    if (migrated) {
+      this.search.close();
+      this.search = new SearchService(this.dataPath, this.embeddings);
+    }
+    return migrated;
   }
 
   async handleWrite(args: WriteJournalArgs): Promise<{ path: string }> {
+    const title = args.title.trim();
+    if (!title) {
+      throw new Error('Journal title must not be empty.');
+    }
     const section = args.section ?? DEFAULT_SECTION;
     const sections: JournalSections = { [section]: args.content };
 
@@ -133,8 +148,8 @@ export class PrivateJournalServer {
       throw new Error('At least one journal section must have content.');
     }
 
-    await this.migrations.run();
-    const entryPath = await this.journal.write(sections);
+    await this.runMigrations();
+    const entryPath = await this.journal.write(sections, title);
     await this.search.indexPath(entryPath);
 
     if (this.git.enabled) launchBackgroundSync(this.dataPath, this.remote);
@@ -180,8 +195,8 @@ export class PrivateJournalServer {
   }
 
   async initialize(): Promise<void> {
-    const pulled = await this.prepareData();
-    if (this.search.needsInitialBackfill()) {
+    const { pulled, migrated } = await this.prepareData();
+    if (this.search.needsInitialBackfill() || migrated) {
       await this.search.backfill().catch((error: unknown) => {
         console.error('[private-journal] initial index backfill failed (best-effort):', error);
       });
@@ -208,7 +223,7 @@ export class PrivateJournalServer {
       'write_journal',
       {
         description: [
-          'Write a durable private journal entry. section defaults to observations.',
+          'Write a durable private journal entry with a meaningful title. section defaults to observations.',
           [
             'Pick the section by what the note is about:',
             '- project_notes: current repo/task state, decisions, and where work stands.',
@@ -221,6 +236,7 @@ export class PrivateJournalServer {
           'Returns a JSON object with the written file path.',
         ].join('\n\n'),
         inputSchema: {
+          title: z.string().trim().min(1),
           content: z.string(),
           section: z.enum(JOURNAL_SECTIONS).optional(),
         },

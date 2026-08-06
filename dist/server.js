@@ -85,6 +85,7 @@ function formatSearchResults(args, results) {
 }
 class PrivateJournalServer {
     dataPath;
+    embeddings;
     journal;
     search;
     git;
@@ -92,9 +93,9 @@ class PrivateJournalServer {
     remote;
     constructor(opts = {}) {
         this.dataPath = opts.dataPath ?? (0, paths_1.resolveDataPath)();
-        const embeddings = embeddings_1.EmbeddingService.getInstance();
-        this.journal = new journal_1.JournalManager(this.dataPath, embeddings);
-        this.search = new search_1.SearchService(this.dataPath, embeddings);
+        this.embeddings = embeddings_1.EmbeddingService.getInstance();
+        this.journal = new journal_1.JournalManager(this.dataPath, this.embeddings);
+        this.search = new search_1.SearchService(this.dataPath, this.embeddings);
         this.remote = (0, paths_1.resolveGitRemote)(opts.remote);
         this.git = new git_sync_1.GitSync(this.dataPath, this.remote);
         this.migrations = new migrations_1.MigrationManager(this.dataPath);
@@ -105,17 +106,29 @@ class PrivateJournalServer {
             await this.git.ensureRepo();
             pulled = await this.git.pull(migrations_1.CURRENT_DATA_VERSION);
         }
-        await this.migrations.run();
-        return pulled;
+        const migrated = await this.runMigrations();
+        return { pulled, migrated };
+    }
+    async runMigrations() {
+        const migrated = await this.migrations.run();
+        if (migrated) {
+            this.search.close();
+            this.search = new search_1.SearchService(this.dataPath, this.embeddings);
+        }
+        return migrated;
     }
     async handleWrite(args) {
+        const title = args.title.trim();
+        if (!title) {
+            throw new Error('Journal title must not be empty.');
+        }
         const section = args.section ?? DEFAULT_SECTION;
         const sections = { [section]: args.content };
         if (!this.journal.hasContent(sections)) {
             throw new Error('At least one journal section must have content.');
         }
-        await this.migrations.run();
-        const entryPath = await this.journal.write(sections);
+        await this.runMigrations();
+        const entryPath = await this.journal.write(sections, title);
         await this.search.indexPath(entryPath);
         if (this.git.enabled)
             (0, sync_launcher_1.launchBackgroundSync)(this.dataPath, this.remote);
@@ -150,8 +163,8 @@ class PrivateJournalServer {
         return this.search.listRecent(args);
     }
     async initialize() {
-        const pulled = await this.prepareData();
-        if (this.search.needsInitialBackfill()) {
+        const { pulled, migrated } = await this.prepareData();
+        if (this.search.needsInitialBackfill() || migrated) {
             await this.search.backfill().catch((error) => {
                 console.error('[private-journal] initial index backfill failed (best-effort):', error);
             });
@@ -173,7 +186,7 @@ class PrivateJournalServer {
         });
         server.registerTool('write_journal', {
             description: [
-                'Write a durable private journal entry. section defaults to observations.',
+                'Write a durable private journal entry with a meaningful title. section defaults to observations.',
                 [
                     'Pick the section by what the note is about:',
                     '- project_notes: current repo/task state, decisions, and where work stands.',
@@ -186,6 +199,7 @@ class PrivateJournalServer {
                 'Returns a JSON object with the written file path.',
             ].join('\n\n'),
             inputSchema: {
+                title: zod_1.z.string().trim().min(1),
                 content: zod_1.z.string(),
                 section: zod_1.z.enum(types_1.JOURNAL_SECTIONS).optional(),
             },

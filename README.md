@@ -7,7 +7,7 @@ Optionally, entries can be auto-synced to a Git remote.
 ## Tools
 
 - `write_journal`
-  - Stores an entry from `content`.
+  - Stores an entry from a required `title` and `content`.
   - Optional arg: `section` (`reflections`, `observations`, `project_notes`, `user_context`, `technical_insights`, `world_knowledge`)
   - `section` defaults to `observations`.
 - `search_journal`
@@ -21,6 +21,19 @@ Optionally, entries can be auto-synced to a Git remote.
   - Optional args: `limit`, `days`
 
 ## Storage Locations
+
+### Markdown front matter
+
+New entries use YAML front matter with the caller-provided `title` and a canonical UTC
+`created_at` value. Legacy `date` and `timestamp` fields are converted by the data revision
+migration; they are not written for new entries.
+
+```yaml
+---
+title: 검색 결과 캐시 오류 수정
+created_at: 2026-06-25T12:34:56.789Z
+---
+```
 
 ### Journal data
 
@@ -219,6 +232,9 @@ journal data format records the new version in the journal. Older app versions
 then stop before reading or writing and tell you to update, instead of risking
 an incompatible change.
 
+The `1 -> 2` data migration rewrites legacy YAML front matter in a staging directory
+and preserves the original data if any entry cannot be converted.
+
 ## SessionStart sync hook
 
 When installed as a plugin, the SessionStart sync hook is registered automatically
@@ -251,8 +267,9 @@ To wire it up manually instead, add to `~/.claude/settings.json`:
 ## Conflict Handling
 
 - Distinct entries mostly coexist automatically because filenames include a microsecond suffix.
-- When two entries share a filename, the one with the larger frontmatter `timestamp` wins.
-- If the `timestamp` is identical, the local version takes precedence.
+- When two entries share a filename, the one with the larger timestamp derived from
+  frontmatter `created_at` wins.
+- If the derived timestamp is identical, the local version takes precedence.
 - The SQLite row for the adopted Markdown is regenerated from the source file.
 - Legacy `.embedding` files are not part of runtime conflict handling; run
   `migrate-index` once to convert and remove them.
